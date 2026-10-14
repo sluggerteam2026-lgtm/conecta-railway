@@ -62,6 +62,7 @@ function publicUsers() {
       sessionId,
       socketId,
       name: session.name,
+      livekitIdentity: `${session.name}-${sessionId.slice(0, 8)}`,
       voiceRoom: voiceState.get(sessionId)?.room || null,
       micEnabled: Boolean(voiceState.get(sessionId)?.micEnabled),
       soundEnabled: voiceState.get(sessionId)?.soundEnabled !== false,
