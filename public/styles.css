@@ -446,3 +446,8 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
   .admin-role-item,.admin-member-item{min-height:44px}.admin-editor-title h3,.admin-page-copy h3{font-size:18px}
   .admin-color-field{grid-template-columns:52px 1fr}
 }
+
+/* Etapa 11: ordenar canais */
+.channel-menu-popover button:disabled{opacity:.38;cursor:default;background:transparent;color:#80848e}
+.channel-menu-popover button:disabled:hover{background:transparent;color:#80848e}
+.channel-menu-separator{height:1px;background:#2f3136;margin:5px 4px}
