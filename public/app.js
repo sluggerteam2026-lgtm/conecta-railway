@@ -201,7 +201,7 @@
       onlineCount.textContent = `${total} online`;
       membersCount.textContent = `${total} / ${max}`;
       membersList.innerHTML = users.map(user => `
-        <div class="member">
+        <div class="member"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
           <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
           <div class="member-info"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong><span>${user.voiceRoom ? `em ${escapeHtml(voiceNames[user.voiceRoom] || 'voz')}` : 'online'}</span></div>
         </div>
@@ -221,7 +221,7 @@
         }
 
         list.innerHTML = people.map(user => `
-          <div class="voice-member" title="${escapeHtml(user.name)}">
+          <div class="voice-member" title="${escapeHtml(user.name)}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
             <span class="voice-member-dot"></span>
             <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
             <span class="voice-member-states">
@@ -351,6 +351,19 @@
     });
   }
 
+  function updateSpeakingIndicators(activeSpeakers = []) {
+    const activeIds = new Set(activeSpeakers.map(participant => participant.identity));
+
+    document.querySelectorAll('[data-participant]').forEach(element => {
+      element.classList.toggle('speaking', activeIds.has(element.dataset.participant));
+    });
+
+    if (lkRoom?.localParticipant?.identity) {
+      const localSpeaking = activeIds.has(lkRoom.localParticipant.identity);
+      document.querySelector('.self-card')?.classList.toggle('speaking', localSpeaking);
+    }
+  }
+
   async function joinVoice(roomName) {
     if (currentVoiceRoom === roomName && lkRoom) {
       callCollapsed = false;
@@ -385,13 +398,22 @@
           el.volume = roomSoundEnabled ? 1 : 0;
           audioBin.appendChild(el);
         } else if (track.kind === Track.Kind.Video) {
-          addVideoTrack(track, participant.name || participant.identity, track.source === Track.Source.ScreenShare, false);
+          addVideoTrack(
+            track,
+            participant.name || participant.identity,
+            track.source === Track.Source.ScreenShare,
+            false,
+            participant.identity,
+          );
         }
       });
 
       lkRoom.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
       lkRoom.on(RoomEvent.ParticipantConnected, () => {
         playVoiceCue('join');
+      });
+      lkRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        updateSpeakingIndicators(speakers);
       });
       lkRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
         playVoiceCue('leave');
@@ -403,6 +425,7 @@
       });
 
       await lkRoom.connect(data.url, data.token);
+      updateSpeakingIndicators(lkRoom.activeSpeakers || []);
 
       try {
         await lkRoom.localParticipant.setMicrophoneEnabled(true);
@@ -441,14 +464,14 @@
     }
   }
 
-  function addVideoTrack(track, label, isScreen, local) {
+  function addVideoTrack(track, label, isScreen, local, participantIdentity = '') {
     const sid = track.sid || track.mediaStreamTrack?.id || Math.random().toString(36).slice(2);
     const id = `track-${sid.replace(/[^a-zA-Z0-9_-]/g, '')}`;
     document.getElementById(id)?.remove();
     const tile = document.createElement('div');
     tile.id = id;
     tile.className = `video-tile${isScreen ? ' screen' : ''}`;
-    if (!local && track?.participant?.identity) tile.dataset.participant = track.participant.identity;
+    if (participantIdentity) tile.dataset.participant = participantIdentity;
     const video = track.attach();
     video.autoplay = true;
     video.playsInline = true;
@@ -487,6 +510,7 @@
       const tile = document.createElement('div');
       tile.id = `track-${String(sid).replace(/[^a-zA-Z0-9_-]/g, '')}`;
       tile.dataset.local = 'true';
+      if (lkRoom.localParticipant.identity) tile.dataset.participant = lkRoom.localParticipant.identity;
       tile.className = `video-tile${isScreen ? ' screen' : ''}`;
       const video = track.attach();
       video.autoplay = true; video.playsInline = true; video.muted = true;
@@ -496,6 +520,7 @@
     }
     updateEmptyVideo();
     updateVideoLayout();
+    updateSpeakingIndicators(lkRoom.activeSpeakers || []);
   }
 
   function updateEmptyVideo() {
@@ -629,6 +654,7 @@
     callStage.classList.add('hidden');
     document.querySelectorAll('.voice-channel').forEach(el => el.classList.remove('connected'));
     document.querySelectorAll('.video-tile').forEach(el => el.remove());
+    document.querySelectorAll('.speaking').forEach(el => el.classList.remove('speaking'));
     audioBin.innerHTML = '';
     updateControlButtons();
     updateEmptyVideo();
