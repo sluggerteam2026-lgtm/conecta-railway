@@ -18,6 +18,7 @@
   const selfAvatar = document.querySelector('#selfAvatar');
   const voiceDock = document.querySelector('#voiceDock');
   const voiceRoomLabel = document.querySelector('#voiceRoomLabel');
+  const voiceConnectionText = document.querySelector('.voice-connected-copy strong');
   const leaveVoiceBtn = document.querySelector('#leaveVoiceBtn');
   const micBtn = document.querySelector('#micBtn');
   const audioBtn = document.querySelector('#audioBtn');
@@ -50,6 +51,8 @@
   let profileName = sessionStorage.getItem('conecta.name') || '';
   let socket = null;
   let reauthenticating = false;
+  let socketEverConnected = false;
+  let socketRecovering = false;
   let currentChannel = 'geral';
   let currentVoiceRoom = null;
   let lkRoom = null;
@@ -181,6 +184,17 @@
     volumePopover?.classList.add('hidden');
   }
 
+  function setVoiceConnectionStatus(status = 'connected') {
+    if (!voiceConnectionText) return;
+    if (status === 'reconnecting') {
+      voiceConnectionText.innerHTML = '<span class="signal-bars">▂▄▆</span> Reconectando…';
+      voiceConnectionText.title = 'A conexão oscilou. O Conecta está tentando voltar automaticamente.';
+      return;
+    }
+    voiceConnectionText.innerHTML = '<span class="signal-bars">▂▄▆</span> Voz conectada';
+    voiceConnectionText.title = '';
+  }
+
   function playVoiceCue(type) {
     if (!roomSoundEnabled) return;
     try {
@@ -256,15 +270,46 @@
 
   function connectSocket() {
     if (socket) socket.disconnect();
-    socket = io({ auth: { sessionId } });
+    socket = io({
+      auth: { sessionId },
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 4000,
+      timeout: 10000,
+    });
 
     socket.on('connect', () => {
+      const recovered = socketRecovering;
+      socketEverConnected = true;
+      socketRecovering = false;
+
+      // Ao reconectar, o servidor cria o socket de novo. Restauramos o canal e a presença de voz.
+      if (currentChannel !== 'geral') socket.emit('join-text-channel', currentChannel);
+      if (currentVoiceRoom) emitVoiceState();
+      if (recovered) notify('Conexão restabelecida.');
+
       // Deixa os tokens das salas prontos em segundo plano para o clique responder mais rápido.
       setTimeout(() => {
         document.querySelectorAll('.voice-channel').forEach(button => {
           prefetchVoiceToken(button.dataset.room);
         });
       }, 120);
+    });
+
+    socket.on('disconnect', (reason) => {
+      if (!socketEverConnected || reason === 'io client disconnect') return;
+      socketRecovering = true;
+      notify('Conexão instável. Tentando reconectar automaticamente…');
+
+      // Se o servidor encerrou o socket, o Socket.IO exige um connect() manual.
+      if (reason === 'io server disconnect') {
+        setTimeout(() => socket?.connect(), 1000);
+      }
+    });
+
+    socket.io.on('reconnect_attempt', () => {
+      socketRecovering = true;
     });
 
     socket.on('connect_error', async (error) => {
@@ -289,6 +334,8 @@
           return;
         }
       }
+      // Durante uma oscilação comum, o Socket.IO seguirá tentando sozinho.
+      if (socketRecovering) return;
       notify(message, true);
     });
 
@@ -426,6 +473,7 @@
     cameraEnabled = false;
     screenEnabled = false;
     voiceDock.classList.remove('hidden');
+    setVoiceConnectionStatus('connected');
     voiceRoomLabel.textContent = voiceNames[roomName];
     callStageTitle.textContent = voiceNames[roomName];
     callStage.classList.remove('hidden');
@@ -476,7 +524,7 @@
       const data = await getVoiceToken(roomName);
 
       const { Room, RoomEvent, Track } = LivekitClient;
-      lkRoom = new Room({
+      const room = new Room({
         adaptiveStream: true,
         dynacast: true,
         publishDefaults: {
@@ -484,8 +532,9 @@
           degradationPreference: 'maintain-framerate',
         },
       });
+      lkRoom = room;
 
-      lkRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach();
           el.autoplay = true;
@@ -503,14 +552,14 @@
         }
       });
 
-      lkRoom.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
-      lkRoom.on(RoomEvent.ParticipantConnected, () => {
+      room.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
+      room.on(RoomEvent.ParticipantConnected, () => {
         playVoiceCue('join');
       });
-      lkRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         updateSpeakingIndicators(speakers);
       });
-      lkRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      room.on(RoomEvent.ParticipantDisconnected, (participant) => {
         playVoiceCue('leave');
         document.querySelectorAll(`[data-participant="${CSS.escape(participant.identity)}"]`).forEach(el => el.remove());
         participantVolumes.delete(participant.identity);
@@ -518,12 +567,34 @@
         if (volumePopoverIdentity === participant.identity) closeVolumePopover();
         updateEmptyVideo();
       });
-      lkRoom.on(RoomEvent.Disconnected, () => {
-        if (currentVoiceRoom) finishVoiceUi();
+      room.on(RoomEvent.Reconnecting, () => {
+        if (room !== lkRoom || !currentVoiceRoom) return;
+        setVoiceConnectionStatus('reconnecting');
+        notify('A conexão da voz oscilou. Reconectando automaticamente…');
       });
 
-      await lkRoom.connect(data.url, data.token);
-      updateSpeakingIndicators(lkRoom.activeSpeakers || []);
+      room.on(RoomEvent.Reconnected, () => {
+        if (room !== lkRoom || !currentVoiceRoom) return;
+        setVoiceConnectionStatus('connected');
+        applyRoomSoundState();
+        emitVoiceState();
+        refreshLocalVideo();
+        notify('Voz reconectada.');
+      });
+
+      room.on(RoomEvent.Disconnected, () => {
+        if (room !== lkRoom) return;
+        lkRoom = null;
+        if (currentVoiceRoom) {
+          setVoiceConnectionStatus('reconnecting');
+          notify('A voz perdeu a conexão depois de várias tentativas. Clique na sala para entrar novamente.', true);
+          finishVoiceUi();
+        }
+      });
+
+      await room.connect(data.url, data.token);
+      setVoiceConnectionStatus('connected');
+      updateSpeakingIndicators(room.activeSpeakers || []);
 
       try {
         await lkRoom.localParticipant.setMicrophoneEnabled(true);
@@ -737,8 +808,9 @@
   async function leaveVoice(showToast = true) {
     if (showToast && currentVoiceRoom) playVoiceCue('leave');
     if (lkRoom) {
-      try { await lkRoom.disconnect(); } catch {}
+      const room = lkRoom;
       lkRoom = null;
+      try { await room.disconnect(); } catch {}
     }
     if (currentVoiceRoom) socket?.emit('voice-state', null);
     finishVoiceUi();
@@ -749,6 +821,7 @@
     currentVoiceRoom = null;
     micEnabled = cameraEnabled = screenEnabled = false;
     voiceDock.classList.add('hidden');
+    setVoiceConnectionStatus('connected');
     callStage.classList.add('hidden');
     document.querySelectorAll('.voice-channel').forEach(el => el.classList.remove('connected'));
     document.querySelectorAll('.video-tile').forEach(el => el.remove());
@@ -803,6 +876,17 @@
     localStorage.removeItem(SAVED_NAME_KEY);
     location.reload();
   }
+
+  window.addEventListener('offline', () => {
+    socketRecovering = true;
+    if (currentVoiceRoom) setVoiceConnectionStatus('reconnecting');
+    notify('Sem internet. O Conecta vai tentar voltar sozinho quando a conexão retornar.', true);
+  });
+
+  window.addEventListener('online', () => {
+    if (socket && !socket.connected) socket.connect();
+    notify('Internet voltou. Reconectando…');
+  });
 
   window.addEventListener('beforeunload', () => {
     if (currentVoiceRoom) socket?.emit('voice-state', null);
