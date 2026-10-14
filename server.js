@@ -21,7 +21,6 @@ const io = new Server(server, {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const ACCESS_CODE = String(process.env.ACCESS_CODE || 'SLG2026');
 const MAX_USERS = Number(process.env.MAX_USERS || 20);
 const LIVEKIT_URL = String(process.env.LIVEKIT_URL || '');
 const LIVEKIT_API_KEY = String(process.env.LIVEKIT_API_KEY || '');
@@ -101,13 +100,8 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/login', (req, res) => {
   const name = cleanName(req.body?.name);
-  const code = String(req.body?.code || '').trim();
-
   if (!name || name.length < 2) {
     return res.status(400).json({ error: 'Digite um nome ou apelido com pelo menos 2 caracteres.' });
-  }
-  if (code !== ACCESS_CODE) {
-    return res.status(401).json({ error: 'Código da turma incorreto.' });
   }
   if (onlineSessionsCount() >= MAX_USERS) {
     return res.status(429).json({ error: `A sala atingiu o limite de ${MAX_USERS} pessoas.` });
