@@ -476,7 +476,7 @@
     setVoiceConnectionStatus('connected');
     voiceRoomLabel.textContent = voiceNames[roomName];
     callStageTitle.textContent = voiceNames[roomName];
-    callStage.classList.remove('hidden');
+    callStage.classList.add('hidden');
     callCollapsed = false;
     document.querySelectorAll('.voice-channel').forEach(el => {
       el.classList.toggle('connected', el.dataset.room === roomName);
@@ -510,7 +510,7 @@
   async function joinVoice(roomName) {
     if (currentVoiceRoom === roomName && lkRoom) {
       callCollapsed = false;
-      callStage.classList.remove('hidden');
+      syncCallStageVisibility();
       return;
     }
     try {
@@ -553,6 +553,15 @@
       });
 
       room.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
+      if (RoomEvent.LocalTrackUnpublished) {
+        room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+          if (room !== lkRoom) return;
+          if (publication?.source === Track.Source.ScreenShare) screenEnabled = false;
+          if (publication?.source === Track.Source.Camera) cameraEnabled = false;
+          updateControlButtons();
+          setTimeout(refreshLocalVideo, 0);
+        });
+      }
       room.on(RoomEvent.ParticipantConnected, () => {
         playVoiceCue('join');
       });
@@ -613,6 +622,16 @@
     }
   }
 
+  function syncCallStageVisibility() {
+    const hasVideo = Boolean(videoGrid.querySelector('.video-tile'));
+    const shouldShow = Boolean(currentVoiceRoom && hasVideo && !callCollapsed);
+    callStage.classList.toggle('hidden', !shouldShow);
+
+    if (!hasVideo && document.fullscreenElement === callStage) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+
   function updateVideoLayout() {
     const tiles = [...videoGrid.querySelectorAll('.video-tile')];
     const hasScreen = tiles.some(tile => tile.classList.contains('screen'));
@@ -632,6 +651,7 @@
     }
 
     videoGrid.classList.toggle('has-focus', tiles.some(tile => tile.classList.contains('focused')));
+    syncCallStageVisibility();
   }
 
   function focusVideoTile(tile) {
@@ -746,6 +766,7 @@
     for (const publication of lkRoom.localParticipant.videoTrackPublications.values()) {
       const track = publication.track;
       if (!track) continue;
+      if (track.mediaStreamTrack?.readyState === 'ended') continue;
       const isScreen = publication.source === LivekitClient.Track.Source.ScreenShare;
       const sid = track.sid || track.mediaStreamTrack?.id || Math.random().toString(36).slice(2);
       const tile = document.createElement('div');
@@ -759,6 +780,18 @@
       const badge = document.createElement('div'); badge.className = 'video-label'; badge.textContent = `${profileName} (você)${isScreen ? ' • tela' : ''}`; tile.appendChild(badge);
       prepareVideoTile(tile);
       videoGrid.appendChild(tile);
+
+      if (isScreen && track.mediaStreamTrack) {
+        const mediaTrack = track.mediaStreamTrack;
+        mediaTrack.addEventListener('ended', () => {
+          screenEnabled = false;
+          updateControlButtons();
+          tile.remove();
+          updateEmptyVideo();
+          updateVideoLayout();
+          setTimeout(refreshLocalVideo, 0);
+        }, { once: true });
+      }
     }
     updateEmptyVideo();
     updateVideoLayout();
@@ -768,6 +801,7 @@
   function updateEmptyVideo() {
     const hasTiles = videoGrid.querySelector('.video-tile');
     emptyVideo.classList.toggle('hidden', Boolean(hasTiles));
+    syncCallStageVisibility();
   }
 
   micBtn.addEventListener('click', async () => {
@@ -800,6 +834,7 @@
       cameraEnabled = !cameraEnabled;
 
       if (cameraEnabled) {
+        callCollapsed = false;
         await lkRoom.localParticipant.setCameraEnabled(
           true,
           {
@@ -828,6 +863,7 @@
     try {
       screenEnabled = !screenEnabled;
       if (screenEnabled) {
+        callCollapsed = false;
         await lkRoom.localParticipant.setScreenShareEnabled(
           true,
           {
