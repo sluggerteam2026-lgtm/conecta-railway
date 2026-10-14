@@ -54,7 +54,9 @@
 
   const SAVED_NAME_KEY = 'conecta.savedName';
   const SAVED_USER_KEY = 'conecta.userKey';
-  const NOISE_SUPPRESSION_KEY = 'conecta.noiseSuppression';
+  const LEGACY_NOISE_SUPPRESSION_KEY = 'conecta.noiseSuppression';
+  const KRISP_ENABLED_KEY = 'conecta.krispEnabled';
+  const KRISP_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@livekit/krisp-noise-filter@0.4.4/+esm';
 
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
@@ -70,7 +72,16 @@
   let roomSoundEnabled = true;
   let cameraEnabled = false;
   let screenEnabled = false;
-  let noiseSuppressionEnabled = localStorage.getItem(NOISE_SUPPRESSION_KEY) !== 'false';
+  const savedKrispPreference = localStorage.getItem(KRISP_ENABLED_KEY);
+  const legacyNoisePreference = localStorage.getItem(LEGACY_NOISE_SUPPRESSION_KEY);
+  let noiseSuppressionEnabled = savedKrispPreference !== null
+    ? savedKrispPreference !== 'false'
+    : legacyNoisePreference !== 'false';
+  let krispState = noiseSuppressionEnabled ? 'idle' : 'off';
+  let krispProcessor = null;
+  let krispTrack = null;
+  let krispModulePromise = null;
+  let krispOperationToken = 0;
   let callCollapsed = false;
   let cueAudioContext = null;
   const voiceTokenCache = new Map();
@@ -455,33 +466,112 @@
   }
 
   function microphoneCaptureOptions() {
-    const options = {
+    // Mantemos o tratamento básico do navegador mesmo com Krisp.
+    // A documentação do LiveKit permite deixar echo cancellation/noise suppression ativos.
+    return {
       echoCancellation: true,
-      noiseSuppression: noiseSuppressionEnabled,
+      noiseSuppression: true,
       autoGainControl: true,
       channelCount: 1,
     };
-
-    const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-    if (supported.voiceIsolation) options.voiceIsolation = noiseSuppressionEnabled;
-    return options;
   }
 
-  async function applyNoiseSuppressionToMicrophone() {
-    if (!lkRoom || !micEnabled) return;
+  function getMicrophoneTrack() {
+    if (!lkRoom) return null;
+    const publication = [...lkRoom.localParticipant.audioTrackPublications.values()]
+      .find(item => item.source === LivekitClient.Track.Source.Microphone);
+    return publication?.track || null;
+  }
 
-    const microphonePublication = [...lkRoom.localParticipant.audioTrackPublications.values()]
-      .find(publication => publication.source === LivekitClient.Track.Source.Microphone);
-    const track = microphonePublication?.track;
+  async function loadKrispModule() {
+    if (!krispModulePromise) {
+      krispModulePromise = import(KRISP_MODULE_URL).catch(error => {
+        krispModulePromise = null;
+        throw error;
+      });
+    }
+    return krispModulePromise;
+  }
 
-    if (track?.applyConstraints) {
-      await track.applyConstraints(microphoneCaptureOptions());
-      return;
+  async function disableKrispProcessor({ dispose = false } = {}) {
+    const processor = krispProcessor;
+    const track = krispTrack;
+
+    if (processor) {
+      try { await processor.setEnabled(false); } catch {}
     }
 
-    // Fallback para navegadores mais antigos: recria rapidamente o microfone com as novas opções.
-    await lkRoom.localParticipant.setMicrophoneEnabled(false);
-    await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
+    if (dispose) {
+      if (track?.stopProcessor) {
+        try { await track.stopProcessor(); } catch {}
+      }
+      krispProcessor = null;
+      krispTrack = null;
+    }
+  }
+
+  async function enableKrispOnMicrophone() {
+    if (!lkRoom || !micEnabled || !noiseSuppressionEnabled) return false;
+
+    const operationToken = krispOperationToken;
+    krispState = 'loading';
+    updateControlButtons();
+
+    try {
+      const krisp = await loadKrispModule();
+      if (operationToken !== krispOperationToken || !noiseSuppressionEnabled || !lkRoom) return false;
+
+      if (typeof krisp.isKrispNoiseFilterSupported === 'function' && !krisp.isKrispNoiseFilterSupported()) {
+        krispState = 'fallback';
+        updateControlButtons();
+        return false;
+      }
+
+      let track = getMicrophoneTrack();
+      for (let attempt = 0; !track && attempt < 6; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (operationToken !== krispOperationToken || !noiseSuppressionEnabled || !lkRoom) return false;
+        track = getMicrophoneTrack();
+      }
+      if (!track?.setProcessor) {
+        krispState = 'fallback';
+        updateControlButtons();
+        return false;
+      }
+
+      if (krispTrack !== track || !krispProcessor) {
+        if (krispTrack && krispTrack !== track) await disableKrispProcessor({ dispose: true });
+        krispProcessor = krisp.KrispNoiseFilter({ quality: 'medium' });
+        await track.setProcessor(krispProcessor);
+        krispTrack = track;
+      }
+
+      if (operationToken !== krispOperationToken || !noiseSuppressionEnabled) {
+        await disableKrispProcessor();
+        krispState = 'off';
+        updateControlButtons();
+        return false;
+      }
+
+      await krispProcessor.setEnabled(true);
+      krispState = 'active';
+      updateControlButtons();
+      return true;
+    } catch (error) {
+      console.error('Krisp não pôde ser iniciado:', error);
+      krispState = 'fallback';
+      updateControlButtons();
+      return false;
+    }
+  }
+
+  function startKrispInBackground({ notifyOnFallback = false } = {}) {
+    if (!noiseSuppressionEnabled || !lkRoom || !micEnabled) return;
+    enableKrispOnMicrophone().then(active => {
+      if (!active && notifyOnFallback && noiseSuppressionEnabled && currentVoiceRoom) {
+        notify('Krisp não ficou disponível neste navegador. A redução básica de ruído continua ativa.', true);
+      }
+    });
   }
 
   function setVoiceConnectionStatus(status = 'connected') {
@@ -1064,6 +1154,7 @@
       try {
         await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
         micEnabled = true;
+        startKrispInBackground({ notifyOnFallback: true });
       } catch {
         micEnabled = false;
         notify('Entre na sala de voz. Se quiser falar, permita o microfone no navegador.', true);
@@ -1268,6 +1359,12 @@
         micEnabled,
         micEnabled ? microphoneCaptureOptions() : undefined,
       );
+      if (micEnabled) {
+        startKrispInBackground();
+      } else if (krispProcessor) {
+        await disableKrispProcessor();
+        krispState = noiseSuppressionEnabled ? 'idle' : 'off';
+      }
       updateControlButtons();
       emitVoiceState();
       notify(micEnabled ? 'Microfone desmutado.' : 'Microfone mutado.');
@@ -1280,21 +1377,31 @@
   });
 
   noiseBtn?.addEventListener('click', async () => {
-    const previous = noiseSuppressionEnabled;
     noiseSuppressionEnabled = !noiseSuppressionEnabled;
-    localStorage.setItem(NOISE_SUPPRESSION_KEY, String(noiseSuppressionEnabled));
+    localStorage.setItem(KRISP_ENABLED_KEY, String(noiseSuppressionEnabled));
+    krispOperationToken += 1;
+
+    if (!noiseSuppressionEnabled) {
+      await disableKrispProcessor();
+      krispState = 'off';
+      updateControlButtons();
+      notify('Krisp desativado. A redução básica do navegador continua ativa.');
+      return;
+    }
+
+    krispState = lkRoom && micEnabled ? 'loading' : 'idle';
     updateControlButtons();
 
-    try {
-      await applyNoiseSuppressionToMicrophone();
-      notify(noiseSuppressionEnabled ? 'Supressor de ruído ativado.' : 'Supressor de ruído desativado.');
-    } catch (error) {
-      console.error(error);
-      noiseSuppressionEnabled = previous;
-      localStorage.setItem(NOISE_SUPPRESSION_KEY, String(noiseSuppressionEnabled));
-      updateControlButtons();
-      notify('Não consegui alterar o supressor de ruído neste navegador.', true);
+    if (!lkRoom || !micEnabled) {
+      notify('Krisp será ativado automaticamente quando o microfone estiver conectado.');
+      return;
     }
+
+    const active = await enableKrispOnMicrophone();
+    notify(
+      active ? 'Krisp ativado.' : 'Krisp não ficou disponível. A redução básica de ruído continua ativa.',
+      !active,
+    );
   });
 
   audioBtn.addEventListener('click', () => {
@@ -1386,14 +1493,21 @@
       soundStatusText.classList.toggle('off', !roomSoundEnabled);
     }
     if (noiseStatusText) {
-      noiseStatusText.textContent = noiseSuppressionEnabled ? '✦ Ruído reduzido' : '✦ Ruído desligado';
-      noiseStatusText.classList.toggle('off', !noiseSuppressionEnabled);
+      let noiseLabel = '✦ Krisp automático';
+      if (!noiseSuppressionEnabled || krispState === 'off') noiseLabel = '○ Krisp desligado';
+      else if (krispState === 'loading') noiseLabel = '… Krisp iniciando';
+      else if (krispState === 'active') noiseLabel = '✦ Krisp ativo';
+      else if (krispState === 'fallback') noiseLabel = '○ Redução básica';
+      noiseStatusText.textContent = noiseLabel;
+      noiseStatusText.classList.toggle('off', !noiseSuppressionEnabled || krispState === 'fallback');
+      noiseStatusText.classList.toggle('loading', krispState === 'loading');
     }
     if (noiseBtn) {
-      noiseBtn.classList.toggle('active', noiseSuppressionEnabled);
-      noiseBtn.classList.toggle('off', !noiseSuppressionEnabled);
-      noiseBtn.textContent = '✦';
-      noiseBtn.title = noiseSuppressionEnabled ? 'Desativar supressor de ruído' : 'Ativar supressor de ruído';
+      noiseBtn.classList.toggle('active', noiseSuppressionEnabled && krispState !== 'fallback');
+      noiseBtn.classList.toggle('off', !noiseSuppressionEnabled || krispState === 'fallback');
+      noiseBtn.classList.toggle('loading', krispState === 'loading');
+      noiseBtn.textContent = krispState === 'loading' ? '…' : '✦';
+      noiseBtn.title = noiseSuppressionEnabled ? 'Desativar Krisp' : 'Ativar Krisp';
       noiseBtn.setAttribute('aria-label', noiseBtn.title);
     }
 
@@ -1404,6 +1518,9 @@
   leaveVoiceBtn.addEventListener('click', () => leaveVoice(true));
   async function leaveVoice(showToast = true) {
     if (showToast && currentVoiceRoom) playVoiceCue('leave');
+    krispOperationToken += 1;
+    if (krispTrack || krispProcessor) await disableKrispProcessor({ dispose: true });
+    krispState = noiseSuppressionEnabled ? 'idle' : 'off';
     if (lkRoom) {
       const room = lkRoom;
       lkRoom = null;
