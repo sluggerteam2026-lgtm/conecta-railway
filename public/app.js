@@ -41,9 +41,13 @@
     'cinema-live': 'Cinema & live',
   };
 
+  const SAVED_NAME_KEY = 'conecta.savedName';
+  const SAVED_CODE_KEY = 'conecta.savedCode';
+
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
   let socket = null;
+  let reauthenticating = false;
   let currentChannel = 'geral';
   let currentVoiceRoom = null;
   let lkRoom = null;
@@ -77,24 +81,34 @@
     return data;
   }
 
-  loginForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
+  async function login(name, code, { remember = true, silent = false } = {}) {
     loginBtn.disabled = true;
     try {
       const data = await api('/api/login', {
         method: 'POST',
-        body: JSON.stringify({ name: nameInput.value, code: codeInput.value }),
+        body: JSON.stringify({ name, code }),
       });
       sessionId = data.sessionId;
       profileName = data.name;
       sessionStorage.setItem('conecta.sessionId', sessionId);
       sessionStorage.setItem('conecta.name', profileName);
+      if (remember) {
+        localStorage.setItem(SAVED_NAME_KEY, profileName);
+        localStorage.setItem(SAVED_CODE_KEY, String(code || '').trim());
+      }
       enterApp();
+      return true;
     } catch (error) {
-      notify(error.message, true);
+      if (!silent) notify(error.message, true);
+      return false;
     } finally {
       loginBtn.disabled = false;
     }
+  }
+
+  loginForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await login(nameInput.value, codeInput.value);
   });
 
   function enterApp() {
@@ -109,9 +123,31 @@
     if (socket) socket.disconnect();
     socket = io({ auth: { sessionId } });
 
-    socket.on('connect_error', (error) => {
-      notify(error.message || 'Não foi possível entrar na turma.', true);
-      if (/sessão/i.test(error.message || '')) signOut();
+    socket.on('connect_error', async (error) => {
+      const message = error.message || 'Não foi possível entrar na turma.';
+      if (/sessão/i.test(message)) {
+        const savedName = localStorage.getItem(SAVED_NAME_KEY) || '';
+        const savedCode = localStorage.getItem(SAVED_CODE_KEY) || '';
+        if (!reauthenticating && savedName && savedCode) {
+          reauthenticating = true;
+          socket?.disconnect();
+          sessionStorage.removeItem('conecta.sessionId');
+          sessionStorage.removeItem('conecta.name');
+          sessionId = '';
+          profileName = '';
+          const ok = await login(savedName, savedCode, { remember: true, silent: true });
+          reauthenticating = false;
+          if (!ok) {
+            landing.classList.remove('hidden');
+            app.classList.add('hidden');
+            nameInput.value = savedName;
+            codeInput.value = savedCode;
+            notify('Seu login salvo não pôde ser validado. Entre novamente.', true);
+          }
+          return;
+        }
+      }
+      notify(message, true);
     });
 
     socket.on('presence', ({ users, total, max }) => {
@@ -422,6 +458,8 @@
     socket?.disconnect();
     sessionStorage.removeItem('conecta.sessionId');
     sessionStorage.removeItem('conecta.name');
+    localStorage.removeItem(SAVED_NAME_KEY);
+    localStorage.removeItem(SAVED_CODE_KEY);
     location.reload();
   }
 
@@ -429,5 +467,16 @@
     if (currentVoiceRoom) socket?.emit('voice-state', null);
   });
 
-  if (sessionId && profileName) enterApp();
+  const savedName = localStorage.getItem(SAVED_NAME_KEY) || '';
+  const savedCode = localStorage.getItem(SAVED_CODE_KEY) || '';
+  if (savedName) nameInput.value = savedName;
+  if (savedCode) codeInput.value = savedCode;
+
+  if (sessionId && profileName) {
+    enterApp();
+  } else if (savedName && savedCode) {
+    login(savedName, savedCode, { remember: true, silent: true }).then((ok) => {
+      if (!ok) notify('Não foi possível entrar automaticamente. Confira seu login.', true);
+    });
+  }
 })();
