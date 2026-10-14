@@ -26,6 +26,8 @@
   const soundStatusText = document.querySelector('#soundStatusText');
   const cameraBtn = document.querySelector('#cameraBtn');
   const screenBtn = document.querySelector('#screenBtn');
+  const noiseBtn = document.querySelector('#noiseBtn');
+  const noiseStatusText = document.querySelector('#noiseStatusText');
   const callStage = document.querySelector('#callStage');
   const callStageTitle = document.querySelector('#callStageTitle');
   const collapseCallBtn = document.querySelector('#collapseCallBtn');
@@ -52,6 +54,7 @@
 
   const SAVED_NAME_KEY = 'conecta.savedName';
   const SAVED_USER_KEY = 'conecta.userKey';
+  const NOISE_SUPPRESSION_KEY = 'conecta.noiseSuppression';
 
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
@@ -67,6 +70,7 @@
   let roomSoundEnabled = true;
   let cameraEnabled = false;
   let screenEnabled = false;
+  let noiseSuppressionEnabled = localStorage.getItem(NOISE_SUPPRESSION_KEY) !== 'false';
   let callCollapsed = false;
   let cueAudioContext = null;
   const voiceTokenCache = new Map();
@@ -448,6 +452,36 @@
   function closeVolumePopover() {
     volumePopoverIdentity = '';
     volumePopover?.classList.add('hidden');
+  }
+
+  function microphoneCaptureOptions() {
+    const options = {
+      echoCancellation: true,
+      noiseSuppression: noiseSuppressionEnabled,
+      autoGainControl: true,
+      channelCount: 1,
+    };
+
+    const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+    if (supported.voiceIsolation) options.voiceIsolation = noiseSuppressionEnabled;
+    return options;
+  }
+
+  async function applyNoiseSuppressionToMicrophone() {
+    if (!lkRoom || !micEnabled) return;
+
+    const microphonePublication = [...lkRoom.localParticipant.audioTrackPublications.values()]
+      .find(publication => publication.source === LivekitClient.Track.Source.Microphone);
+    const track = microphonePublication?.track;
+
+    if (track?.applyConstraints) {
+      await track.applyConstraints(microphoneCaptureOptions());
+      return;
+    }
+
+    // Fallback para navegadores mais antigos: recria rapidamente o microfone com as novas opções.
+    await lkRoom.localParticipant.setMicrophoneEnabled(false);
+    await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
   }
 
   function setVoiceConnectionStatus(status = 'connected') {
@@ -1028,7 +1062,7 @@
       updateSpeakingIndicators(room.activeSpeakers || []);
 
       try {
-        await lkRoom.localParticipant.setMicrophoneEnabled(true);
+        await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
         micEnabled = true;
       } catch {
         micEnabled = false;
@@ -1230,7 +1264,10 @@
     if (!lkRoom) return;
     try {
       micEnabled = !micEnabled;
-      await lkRoom.localParticipant.setMicrophoneEnabled(micEnabled);
+      await lkRoom.localParticipant.setMicrophoneEnabled(
+        micEnabled,
+        micEnabled ? microphoneCaptureOptions() : undefined,
+      );
       updateControlButtons();
       emitVoiceState();
       notify(micEnabled ? 'Microfone desmutado.' : 'Microfone mutado.');
@@ -1239,6 +1276,24 @@
       updateControlButtons();
       emitVoiceState();
       notify('Não consegui acessar o microfone.', true);
+    }
+  });
+
+  noiseBtn?.addEventListener('click', async () => {
+    const previous = noiseSuppressionEnabled;
+    noiseSuppressionEnabled = !noiseSuppressionEnabled;
+    localStorage.setItem(NOISE_SUPPRESSION_KEY, String(noiseSuppressionEnabled));
+    updateControlButtons();
+
+    try {
+      await applyNoiseSuppressionToMicrophone();
+      notify(noiseSuppressionEnabled ? 'Supressor de ruído ativado.' : 'Supressor de ruído desativado.');
+    } catch (error) {
+      console.error(error);
+      noiseSuppressionEnabled = previous;
+      localStorage.setItem(NOISE_SUPPRESSION_KEY, String(noiseSuppressionEnabled));
+      updateControlButtons();
+      notify('Não consegui alterar o supressor de ruído neste navegador.', true);
     }
   });
 
@@ -1329,6 +1384,17 @@
     if (soundStatusText) {
       soundStatusText.textContent = roomSoundEnabled ? '🔊 Som ligado' : '🔈 Som desligado';
       soundStatusText.classList.toggle('off', !roomSoundEnabled);
+    }
+    if (noiseStatusText) {
+      noiseStatusText.textContent = noiseSuppressionEnabled ? '✦ Ruído reduzido' : '✦ Ruído desligado';
+      noiseStatusText.classList.toggle('off', !noiseSuppressionEnabled);
+    }
+    if (noiseBtn) {
+      noiseBtn.classList.toggle('active', noiseSuppressionEnabled);
+      noiseBtn.classList.toggle('off', !noiseSuppressionEnabled);
+      noiseBtn.textContent = '✦';
+      noiseBtn.title = noiseSuppressionEnabled ? 'Desativar supressor de ruído' : 'Ativar supressor de ruído';
+      noiseBtn.setAttribute('aria-label', noiseBtn.title);
     }
 
     cameraBtn.classList.toggle('active', cameraEnabled); cameraBtn.textContent = cameraEnabled ? '◉' : '◎';
