@@ -26,7 +26,8 @@ const LIVEKIT_API_KEY = String(process.env.LIVEKIT_API_KEY || '');
 const LIVEKIT_API_SECRET = String(process.env.LIVEKIT_API_SECRET || '');
 const DATABASE_URL = String(process.env.DATABASE_URL || '');
 const MASTER_NAME = 'yCsLouco';
-const LOBBY_SLUG = 'sala-de-todos';
+const TEXT_LOBBY_SLUG = 'sala-de-todos';
+const VOICE_LOBBY_SLUG = 'sala-de-todos-voz';
 
 const ALL_PERMISSIONS = {
   send_messages: true,
@@ -404,9 +405,20 @@ async function initDatabase() {
   await pool.query(`
     INSERT INTO channels (id, type, slug, name, subtitle, sort_order, is_lobby)
     VALUES ($1, 'text', $2, 'Sala de Todos', 'Sala de entrada para todos', 1, TRUE)
-    ON CONFLICT (slug) DO UPDATE SET is_lobby = TRUE
-  `, [crypto.randomUUID(), LOBBY_SLUG]);
-  await pool.query(`UPDATE channels SET is_lobby = FALSE WHERE slug <> $1 AND is_lobby = TRUE`, [LOBBY_SLUG]);
+    ON CONFLICT (slug) DO UPDATE SET is_lobby = TRUE, name = EXCLUDED.name, subtitle = EXCLUDED.subtitle
+  `, [crypto.randomUUID(), TEXT_LOBBY_SLUG]);
+
+  await pool.query(`
+    INSERT INTO channels (id, type, slug, name, subtitle, sort_order, is_lobby)
+    VALUES ($1, 'voice', $2, 'Sala de Todos', '', 101, TRUE)
+    ON CONFLICT (slug) DO UPDATE SET is_lobby = TRUE, name = EXCLUDED.name
+  `, [crypto.randomUUID(), VOICE_LOBBY_SLUG]);
+
+  await pool.query(`
+    UPDATE channels
+    SET is_lobby = FALSE
+    WHERE is_lobby = TRUE AND slug NOT IN ($1, $2)
+  `, [TEXT_LOBBY_SLUG, VOICE_LOBBY_SLUG]);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -625,6 +637,62 @@ app.patch('/api/channels/:id', async (req, res) => {
   }
 });
 
+app.patch('/api/channels/:id/order', async (req, res) => {
+  const client = pool ? await pool.connect().catch(() => null) : null;
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    if (!(await canManage(auth.session, 'manage_channels'))) return res.status(403).json({ error: 'Você não tem permissão para mover canais.' });
+    if (!client) return res.status(503).json({ error: 'O banco ainda não está disponível.' });
+
+    const id = String(req.params.id || '').trim();
+    const direction = String(req.body?.direction || '').toLowerCase();
+    if (!id || !['up', 'down'].includes(direction)) return res.status(400).json({ error: 'Movimento inválido.' });
+
+    await client.query('BEGIN');
+    const found = await client.query(`SELECT id, type FROM channels WHERE id = $1 FOR UPDATE`, [id]);
+    if (!found.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Canal não encontrado.' });
+    }
+
+    const type = found.rows[0].type;
+    const ordered = await client.query(`
+      SELECT id FROM channels
+      WHERE type = $1
+      ORDER BY sort_order ASC, created_at ASC
+      FOR UPDATE
+    `, [type]);
+    const ids = ordered.rows.map(row => row.id);
+    const index = ids.indexOf(id);
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+
+    if (index < 0 || targetIndex < 0 || targetIndex >= ids.length) {
+      await client.query('ROLLBACK');
+      const visible = await visibleChannelsForSession(auth.session);
+      return res.json({ channels: visible.channels, moved: false });
+    }
+
+    [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
+    const start = type === 'text' ? 10 : 110;
+    for (let i = 0; i < ids.length; i += 1) {
+      await client.query(`UPDATE channels SET sort_order = $1 WHERE id = $2`, [start + i * 10, ids[i]]);
+    }
+    await client.query('COMMIT');
+
+    await refreshChannelsCache();
+    await emitChannels();
+    const visible = await visibleChannelsForSession(auth.session);
+    res.json({ channels: visible.channels, moved: true });
+  } catch (error) {
+    try { await client?.query('ROLLBACK'); } catch {}
+    console.error('Erro ao mover canal:', error);
+    res.status(500).json({ error: 'Não foi possível mover o canal.' });
+  } finally {
+    client?.release();
+  }
+});
+
 app.delete('/api/channels/:id', async (req, res) => {
   const client = pool ? await pool.connect().catch(() => null) : null;
   try {
@@ -717,18 +785,26 @@ app.post('/api/livekit-token', async (req, res) => {
     if (!voiceRooms.has(room) || !(await canSeeChannel(auth.session, room))) return res.status(403).json({ error: 'Você não tem acesso a esta sala de voz.' });
 
     const access = await getUserAccess(auth.session);
-    if (!(access.isMaster || access.isAdmin || access.permissions.join_voice)) return res.status(403).json({ error: 'Seu cargo não permite entrar em salas de voz.' });
+    const voiceChannel = voiceRooms.get(room);
+    const lobbyAccess = Boolean(voiceChannel?.isLobby);
+    if (!lobbyAccess && !(access.isMaster || access.isAdmin || access.permissions.join_voice)) {
+      return res.status(403).json({ error: 'Seu cargo não permite entrar em salas de voz.' });
+    }
+
+    const effectivePermissions = lobbyAccess
+      ? { ...access.permissions, join_voice: true, speak: true, camera: true, screen_share: true }
+      : access.permissions;
 
     const identity = `${auth.session.name}-${auth.token.slice(0, 8)}`;
     const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity, name: auth.session.name, ttl: '15m' });
     token.addGrant({
       roomJoin: true,
       room,
-      canPublish: Boolean(access.permissions.speak || access.permissions.camera || access.permissions.screen_share),
+      canPublish: Boolean(effectivePermissions.speak || effectivePermissions.camera || effectivePermissions.screen_share),
       canSubscribe: true,
       canPublishData: true,
     });
-    res.json({ token: await token.toJwt(), url: LIVEKIT_URL, identity, permissions: access.permissions });
+    res.json({ token: await token.toJwt(), url: LIVEKIT_URL, identity, permissions: effectivePermissions });
   } catch (error) {
     console.error('Erro ao gerar token LiveKit:', error);
     res.status(500).json({ error: 'Não foi possível preparar a sala de voz.' });
@@ -1106,7 +1182,8 @@ io.on('connection', async socket => {
     const room = typeof payload === 'string' ? payload : String(payload?.room || '').trim();
     if (!voiceRooms.has(room) || !(await canSeeChannel(session, room))) return;
     const access = await getUserAccess(session);
-    if (!(access.isMaster || access.isAdmin || access.permissions.join_voice)) return;
+    const voiceChannel = voiceRooms.get(room);
+    if (!voiceChannel?.isLobby && !(access.isMaster || access.isAdmin || access.permissions.join_voice)) return;
 
     voiceState.set(sessionId, {
       room,
