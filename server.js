@@ -30,8 +30,8 @@ const LIVEKIT_API_KEY = String(process.env.LIVEKIT_API_KEY || '');
 const LIVEKIT_API_SECRET = String(process.env.LIVEKIT_API_SECRET || '');
 const DATABASE_URL = String(process.env.DATABASE_URL || '');
 
-const TEXT_CHANNELS = new Set(['geral', 'jogos', 'links-e-assuntos']);
-const VOICE_ROOMS = new Set(['sala-da-turma', 'jogando-juntos', 'cinema-live']);
+const textChannels = new Map();
+const voiceRooms = new Map();
 
 const sessions = new Map();
 const socketsBySession = new Map();
@@ -75,6 +75,72 @@ function cleanUserKey(value) {
 
 function cleanMessage(value) {
   return String(value || '').trim().slice(0, 1500);
+}
+
+function cleanChannelName(value) {
+  return String(value || '')
+    .replace(/[<>\\/]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+}
+
+function slugifyChannelName(value) {
+  const slug = cleanChannelName(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return slug || `canal-${crypto.randomBytes(3).toString('hex')}`;
+}
+
+function serializeChannels() {
+  return [
+    ...[...textChannels.values()],
+    ...[...voiceRooms.values()],
+  ].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'pt-BR'));
+}
+
+async function refreshChannelsCache() {
+  if (!pool) return;
+  const result = await pool.query(`
+    SELECT id, type, slug, name, subtitle, sort_order, created_at
+    FROM channels
+    ORDER BY sort_order ASC, created_at ASC
+  `);
+
+  textChannels.clear();
+  voiceRooms.clear();
+
+  for (const row of result.rows) {
+    const channel = {
+      id: row.id,
+      type: row.type,
+      slug: row.slug,
+      name: row.name,
+      subtitle: row.subtitle || '',
+      sortOrder: Number(row.sort_order) || 0,
+    };
+    if (row.type === 'text') textChannels.set(row.slug, channel);
+    if (row.type === 'voice') voiceRooms.set(row.slug, channel);
+  }
+}
+
+function emitChannels() {
+  io.emit('channels-updated', { channels: serializeChannels() });
+}
+
+async function makeUniqueChannelSlug(name) {
+  const base = slugifyChannelName(name);
+  let slug = base;
+  let suffix = 2;
+
+  while (textChannels.has(slug) || voiceRooms.has(slug)) {
+    slug = `${base.slice(0, 42)}-${suffix++}`;
+  }
+  return slug;
 }
 
 function onlineSessionsCount() {
@@ -135,6 +201,41 @@ async function initDatabase() {
   }
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS channels (
+      id UUID PRIMARY KEY,
+      type VARCHAR(8) NOT NULL CHECK (type IN ('text', 'voice')),
+      slug VARCHAR(64) NOT NULL UNIQUE,
+      name VARCHAR(48) NOT NULL,
+      subtitle VARCHAR(160) NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const channelCount = await pool.query(`SELECT COUNT(*)::int AS total FROM channels`);
+  if (Number(channelCount.rows[0]?.total || 0) === 0) {
+    const defaults = [
+      ['text', 'geral', 'geral', 'O papo principal da turma', 10],
+      ['text', 'jogos', 'jogos', 'Partidas, convites e aquele GG', 20],
+      ['text', 'links-e-assuntos', 'links-e-assuntos', 'Links, vídeos e assuntos aleatórios', 30],
+      ['voice', 'sala-da-turma', 'Sala da turma', '', 110],
+      ['voice', 'jogando-juntos', 'Jogando juntos', '', 120],
+      ['voice', 'cinema-live', 'Cinema & live', '', 130],
+    ];
+
+    for (const [type, slug, name, subtitle, sortOrder] of defaults) {
+      await pool.query(
+        `
+          INSERT INTO channels (id, type, slug, name, subtitle, sort_order)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (slug) DO NOTHING
+        `,
+        [crypto.randomUUID(), type, slug, name, subtitle, sortOrder],
+      );
+    }
+  }
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS messages (
       id UUID PRIMARY KEY,
       channel VARCHAR(64) NOT NULL,
@@ -151,8 +252,9 @@ async function initDatabase() {
     ON messages (channel, created_at DESC)
   `);
 
+  await refreshChannelsCache();
   databaseReady = true;
-  console.log('Conecta: PostgreSQL conectado e tabela de mensagens pronta.');
+  console.log('Conecta: PostgreSQL conectado; canais e mensagens estão prontos.');
 }
 
 app.get('/api/health', (_req, res) => {
@@ -162,6 +264,7 @@ app.get('/api/health', (_req, res) => {
     livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
     databaseConfigured: Boolean(DATABASE_URL),
     databaseReady,
+    channels: textChannels.size + voiceRooms.size,
     frontendConfigured: existsSync(INDEX_FILE),
     online: onlineSessionsCount(),
     maxUsers: MAX_USERS,
@@ -183,6 +286,161 @@ app.post('/api/login', (req, res) => {
   res.json({ sessionId, name, userKey, maxUsers: MAX_USERS });
 });
 
+
+app.get('/api/channels', (req, res) => {
+  const auth = getSession(req);
+  if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+  if (!databaseReady || !pool) {
+    return res.status(503).json({ error: 'O banco de canais ainda não está disponível.' });
+  }
+  res.json({ channels: serializeChannels() });
+});
+
+app.post('/api/channels', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    if (!databaseReady || !pool) {
+      return res.status(503).json({ error: 'O banco de canais ainda não está disponível.' });
+    }
+
+    const type = String(req.body?.type || '');
+    const name = cleanChannelName(req.body?.name);
+    if (!['text', 'voice'].includes(type)) {
+      return res.status(400).json({ error: 'Tipo de canal inválido.' });
+    }
+    if (name.length < 2) {
+      return res.status(400).json({ error: 'Use um nome com pelo menos 2 caracteres.' });
+    }
+
+    const slug = await makeUniqueChannelSlug(name);
+    const maxOrder = await pool.query(
+      `SELECT COALESCE(MAX(sort_order), $1)::int AS value FROM channels WHERE type = $2`,
+      [type === 'text' ? 0 : 100, type],
+    );
+    const sortOrder = Number(maxOrder.rows[0]?.value || 0) + 10;
+    const id = crypto.randomUUID();
+    const subtitle = type === 'text' ? `Conversa em #${name}` : '';
+
+    await pool.query(
+      `
+        INSERT INTO channels (id, type, slug, name, subtitle, sort_order)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [id, type, slug, name, subtitle, sortOrder],
+    );
+
+    await refreshChannelsCache();
+    emitChannels();
+    res.status(201).json({ channels: serializeChannels() });
+  } catch (error) {
+    console.error('Erro ao criar canal:', error);
+    res.status(500).json({ error: 'Não foi possível criar o canal.' });
+  }
+});
+
+app.patch('/api/channels/:id', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    if (!databaseReady || !pool) {
+      return res.status(503).json({ error: 'O banco de canais ainda não está disponível.' });
+    }
+
+    const id = String(req.params.id || '').trim();
+    const name = cleanChannelName(req.body?.name);
+    if (!id || name.length < 2) {
+      return res.status(400).json({ error: 'Use um nome com pelo menos 2 caracteres.' });
+    }
+
+    const result = await pool.query(
+      `
+        UPDATE channels
+        SET name = $1,
+            subtitle = CASE WHEN type = 'text' THEN $2 ELSE subtitle END
+        WHERE id = $3
+        RETURNING id
+      `,
+      [name, `Conversa em #${name}`, id],
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ error: 'Canal não encontrado.' });
+    }
+
+    await refreshChannelsCache();
+    emitChannels();
+    res.json({ channels: serializeChannels() });
+  } catch (error) {
+    console.error('Erro ao renomear canal:', error);
+    res.status(500).json({ error: 'Não foi possível renomear o canal.' });
+  }
+});
+
+app.delete('/api/channels/:id', async (req, res) => {
+  const client = pool ? await pool.connect().catch(() => null) : null;
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    if (!databaseReady || !pool || !client) {
+      return res.status(503).json({ error: 'O banco de canais ainda não está disponível.' });
+    }
+
+    const id = String(req.params.id || '').trim();
+    const found = await client.query(
+      `SELECT id, type, slug, name FROM channels WHERE id = $1`,
+      [id],
+    );
+    if (!found.rowCount) {
+      return res.status(404).json({ error: 'Canal não encontrado.' });
+    }
+
+    const channel = found.rows[0];
+    if (channel.type === 'text') {
+      const count = await client.query(`SELECT COUNT(*)::int AS total FROM channels WHERE type = 'text'`);
+      if (Number(count.rows[0]?.total || 0) <= 1) {
+        return res.status(400).json({ error: 'O Conecta precisa ter pelo menos um canal de texto.' });
+      }
+    }
+
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM channels WHERE id = $1`, [id]);
+    if (channel.type === 'text') {
+      await client.query(`DELETE FROM messages WHERE channel = $1`, [channel.slug]);
+    }
+    await client.query('COMMIT');
+
+    await refreshChannelsCache();
+
+    if (channel.type === 'text') {
+      const fallback = [...textChannels.keys()][0] || null;
+      if (fallback) {
+        for (const socket of io.sockets.sockets.values()) {
+          if (socket.data.textChannel !== channel.slug) continue;
+          socket.leave(`text:${channel.slug}`);
+          socket.data.textChannel = fallback;
+          socket.join(`text:${fallback}`);
+        }
+      }
+    } else {
+      for (const [sessionId, state] of voiceState.entries()) {
+        if (state?.room === channel.slug) voiceState.delete(sessionId);
+      }
+      io.emit('voice-room-deleted', { room: channel.slug, name: channel.name });
+      emitPresence();
+    }
+
+    emitChannels();
+    res.json({ channels: serializeChannels() });
+  } catch (error) {
+    try { await client?.query('ROLLBACK'); } catch {}
+    console.error('Erro ao excluir canal:', error);
+    res.status(500).json({ error: 'Não foi possível excluir o canal.' });
+  } finally {
+    client?.release();
+  }
+});
+
 app.get('/api/messages/:channel', async (req, res) => {
   try {
     const auth = getSession(req);
@@ -192,7 +450,7 @@ app.get('/api/messages/:channel', async (req, res) => {
     }
 
     const channel = String(req.params.channel || '');
-    if (!TEXT_CHANNELS.has(channel)) {
+    if (!textChannels.has(channel)) {
       return res.status(400).json({ error: 'Canal de texto inválido.' });
     }
 
@@ -229,7 +487,7 @@ app.post('/api/livekit-token', async (req, res) => {
     }
 
     const room = String(req.body?.room || '').trim().slice(0, 64);
-    if (!VOICE_ROOMS.has(room)) {
+    if (!voiceRooms.has(room)) {
       return res.status(400).json({ error: 'Sala de voz inválida.' });
     }
 
@@ -281,12 +539,12 @@ io.on('connection', (socket) => {
     io.sockets.sockets.get(previous)?.disconnect(true);
   }
   socketsBySession.set(sessionId, socket.id);
-  socket.data.textChannel = 'geral';
-  socket.join('text:geral');
+  socket.data.textChannel = textChannels.has('geral') ? 'geral' : ([...textChannels.keys()][0] || null);
+  if (socket.data.textChannel) socket.join(`text:${socket.data.textChannel}`);
   emitPresence();
 
   socket.on('join-text-channel', (channel) => {
-    if (!TEXT_CHANNELS.has(channel)) return;
+    if (!textChannels.has(channel)) return;
     if (socket.data.textChannel) socket.leave(`text:${socket.data.textChannel}`);
     socket.data.textChannel = channel;
     socket.join(`text:${channel}`);
@@ -296,7 +554,7 @@ io.on('connection', (socket) => {
     try {
       const channel = String(payload.channel || '');
       if (channel !== socket.data.textChannel) return;
-      if (!TEXT_CHANNELS.has(channel)) return;
+      if (!textChannels.has(channel)) return;
       if (!databaseReady || !pool) {
         socket.emit('chat-error', { message: 'O banco de mensagens está indisponível no momento.' });
         return;
@@ -416,7 +674,7 @@ io.on('connection', (socket) => {
 
     // Compatibilidade com versões antigas que enviavam apenas o nome da sala.
     if (typeof payload === 'string') {
-      if (VOICE_ROOMS.has(payload)) {
+      if (voiceRooms.has(payload)) {
         voiceState.set(sessionId, { room: payload, micEnabled: true, soundEnabled: true });
       }
       emitPresence();
@@ -424,7 +682,7 @@ io.on('connection', (socket) => {
     }
 
     const room = String(payload?.room || '').trim();
-    if (!VOICE_ROOMS.has(room)) return;
+    if (!voiceRooms.has(room)) return;
 
     voiceState.set(sessionId, {
       room,
