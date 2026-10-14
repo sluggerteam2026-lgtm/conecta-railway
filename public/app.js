@@ -531,13 +531,28 @@
     if (!lkRoom) return;
     try {
       cameraEnabled = !cameraEnabled;
-      await lkRoom.localParticipant.setCameraEnabled(cameraEnabled);
+
+      if (cameraEnabled) {
+        await lkRoom.localParticipant.setCameraEnabled(
+          true,
+          {
+            resolution: { width: 1920, height: 1080, frameRate: 30 },
+          },
+          {
+            videoEncoding: { maxBitrate: 5_000_000, maxFramerate: 30 },
+            degradationPreference: 'maintain-resolution',
+          },
+        );
+      } else {
+        await lkRoom.localParticipant.setCameraEnabled(false);
+      }
+
       setTimeout(refreshLocalVideo, 100);
       updateControlButtons();
     } catch (error) {
       cameraEnabled = false;
       updateControlButtons();
-      notify('Não consegui acessar a câmera.', true);
+      notify('Não consegui acessar a câmera em Full HD.', true);
     }
   });
 
