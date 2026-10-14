@@ -1,0 +1,21 @@
+{
+  "name": "conecta",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Conecta — salas privadas de texto, voz, vídeo e compartilhamento de tela para amigos.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "livekit-server-sdk": "^2.13.3",
+    "socket.io": "^4.8.1"
+  }
+}

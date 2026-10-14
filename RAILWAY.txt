@@ -1,0 +1,15 @@
+CONECTA - DEPLOY NO RAILWAY
+
+Este pacote está preparado para deploy no Railway.
+NÃO contém LIVEKIT_API_SECRET nem outras credenciais privadas.
+
+No Railway, configure estas variáveis em Variables:
+ACCESS_CODE=SLG2026
+MAX_USERS=20
+LIVEKIT_URL=wss://SEU-PROJETO.livekit.cloud
+LIVEKIT_API_KEY=SUA_API_KEY
+LIVEKIT_API_SECRET=SEU_API_SECRET
+
+Não é necessário definir PORT: o Railway fornece essa variável automaticamente.
+O serviço inicia com: npm start
+Depois do deploy, em Settings > Networking, use Generate Domain.
