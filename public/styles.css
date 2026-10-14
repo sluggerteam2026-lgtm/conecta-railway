@@ -55,7 +55,7 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:#1a1b1e;border:2px solid transparent;background-clip:padding-box;border-radius:8px}::-webkit-scrollbar-track{background:transparent}
 
 @media(max-width:1080px){.app{grid-template-columns:72px 230px minmax(0,1fr)}.members-panel{position:fixed;right:0;top:0;bottom:0;width:240px;z-index:20;transform:translateX(100%);transition:.18s;box-shadow:-10px 0 30px #0005}.members-panel.open{transform:translateX(0)}}
-@media(max-width:760px){body{overflow:auto}.landing{padding:0 18px}.brand small,.privacy-pill{display:none}.hero{grid-template-columns:1fr;gap:28px;padding:35px 0}.hero-copy{text-align:center}.feature-row{justify-content:center}.login-card{padding:24px}.app{grid-template-columns:1fr;height:100dvh}.server-rail,.channels-panel{display:none}.channel-title small,.head-divider,.online-count{display:none}.message-tools{display:none}.messages{padding-bottom:72px}.message-box{left:9px;right:9px;bottom:10px;grid-template-columns:42px 1fr;margin:0}.call-stage{max-height:55vh}.call-stage:fullscreen{max-height:none}}
+@media(max-width:760px){body{overflow:hidden}.landing{padding:0 18px;overflow:auto}.brand small,.privacy-pill{display:none}.hero{grid-template-columns:1fr;gap:28px;padding:35px 0}.hero-copy{text-align:center}.feature-row{justify-content:center}.login-card{padding:24px}.app{grid-template-columns:1fr;height:100dvh}.server-rail{display:none}.channel-title small,.head-divider,.online-count{display:none}.message-tools{display:none}.messages{padding-bottom:72px}.message-box{left:9px;right:9px;bottom:10px;grid-template-columns:42px 1fr;margin:0}.call-stage{max-height:55vh}.call-stage:fullscreen{max-height:none}}
 
 
 /* Indicador de quem está falando */
@@ -306,3 +306,97 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 #noiseBtn.loading{color:#f0b232;background:#443b27;cursor:wait;animation:krispPulse 1s ease-in-out infinite}
 #noiseStatusText.loading{color:#f0b232}
 @keyframes krispPulse{0%,100%{opacity:.7}50%{opacity:1}}
+
+/* Etapa 9: layout completo para celular */
+.mobile-only{display:none}
+.mobile-drawer-backdrop{display:none}
+
+@media(max-width:760px){
+  html,body{height:100%;overflow:hidden}
+  body.mobile-panel-open{overflow:hidden}
+  .app{grid-template-columns:minmax(0,1fr);height:100dvh;min-height:100dvh;overflow:hidden}
+  .server-rail{display:none}
+
+  .mobile-only{display:grid}
+  .channels-panel{
+    display:grid;
+    position:fixed;
+    inset:0 auto 0 0;
+    width:min(86vw,320px);
+    height:100dvh;
+    z-index:70;
+    transform:translateX(-102%);
+    transition:transform .18s ease;
+    box-shadow:14px 0 34px rgba(0,0,0,.42);
+  }
+  .channels-panel.mobile-open{transform:translateX(0)}
+  .server-header{padding-left:14px;padding-right:8px}
+  .server-chevron{display:none}
+  .mobile-drawer-close{
+    width:34px;height:34px;place-items:center;border-radius:5px;
+    background:transparent;color:#b5bac1;cursor:pointer;font-size:22px;line-height:1;
+  }
+  .mobile-drawer-close:hover{background:#35373c;color:#fff}
+  .mobile-drawer-backdrop{
+    display:block;position:fixed;inset:0;z-index:65;border:0;padding:0;
+    background:rgba(0,0,0,.54);opacity:0;pointer-events:none;transition:opacity .18s ease;
+  }
+  .mobile-drawer-backdrop.open{opacity:1;pointer-events:auto}
+
+  .main-panel{width:100%;height:100dvh;min-height:0;grid-template-rows:48px auto minmax(0,1fr)}
+  .chat-head{padding:0 8px;gap:4px}
+  .channel-title{gap:6px;min-width:0;flex:1}
+  .mobile-channels-toggle{
+    width:34px;height:34px;place-items:center;padding:0;border-radius:5px;
+    background:transparent;color:#b5bac1;font-size:20px;position:relative;flex:0 0 auto;
+  }
+  .mobile-channels-toggle:hover{background:#35373c;color:#fff}
+  .mobile-channels-toggle.voice-active::after{
+    content:"";position:absolute;right:3px;bottom:3px;width:7px;height:7px;border-radius:50%;
+    background:#23a559;box-shadow:0 0 0 2px #313338;
+  }
+  .channel-title-icon{font-size:21px}
+  .channel-title strong{max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .channel-title small,.head-divider,.online-count{display:none}
+  .head-right{gap:4px;flex:0 0 auto}
+  .head-icon{display:none}
+  .head-button{width:34px;height:34px;display:grid;place-items:center;padding:0}
+
+  .members-panel{
+    position:fixed;right:0;left:auto;top:0;bottom:0;width:min(86vw,320px);height:100dvh;
+    z-index:70;transform:translateX(102%);transition:transform .18s ease;
+    box-shadow:-14px 0 34px rgba(0,0,0,.42);padding-bottom:calc(20px + env(safe-area-inset-bottom));
+  }
+  .members-panel.open{transform:translateX(0)}
+
+  .channel-scroll{padding-bottom:12px}
+  .channel{min-height:40px;height:auto;padding-top:3px;padding-bottom:3px}
+  .channel-more{opacity:.65}
+  .voice-members{padding-left:28px}
+  .voice-member{min-height:34px}
+  .voice-dock{padding:10px 9px calc(9px + env(safe-area-inset-bottom))}
+  .voice-actions{grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+  .dock-control{height:38px;font-size:16px}
+  .self-card{min-height:56px;height:56px;padding-bottom:env(safe-area-inset-bottom)}
+
+  .messages{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
+  .welcome-message{padding:34px 14px 20px}
+  .welcome-message h2{font-size:25px}
+  .message{padding-left:10px;padding-right:10px;grid-template-columns:36px minmax(0,1fr);gap:9px}
+  .message .avatar{width:36px;height:36px}
+  .message-content{padding-right:62px}
+  .message-box{
+    left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));height:46px;
+    grid-template-columns:40px minmax(0,1fr);padding-right:8px;
+  }
+  .message-tools{display:none}
+
+  .call-stage{min-height:190px;max-height:52dvh}
+  .call-stage.screen-active{min-height:42dvh;max-height:60dvh}
+  .call-stage-head{padding:0 7px}
+  .call-stage-head button{padding:5px 6px}
+  .video-grid{padding:7px;gap:7px}
+  .video-grid.has-screen .video-tile.screen{min-height:190px}
+  .video-tile{min-height:130px}
+  .video-tile-fullscreen{opacity:.82}
+}
