@@ -77,6 +77,12 @@ button { color: inherit; }
 .voice-member { min-width: 0; display: flex; align-items: center; gap: 7px; color: #858e9d; font-size: 11px; line-height: 1.35; }
 .voice-member > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-member-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px rgba(54, 211, 153, .35); }
+.voice-member-states { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.voice-state-icon { min-width: 18px; height: 18px; padding: 0 4px; display: inline-grid; place-items: center; border-radius: 5px; background: #151c23; border: 1px solid #26313a; color: #98a2af; font-size: 10px; line-height: 1; }
+.voice-state-icon.off { color: var(--danger); border-color: #593038; background: #241519; }
+.voice-status-line { display: flex; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+.voice-status-chip { flex: 1 1 auto; min-width: 0; border: 1px solid #285141; background: #112019; color: #72e6b7; border-radius: 6px; padding: 5px 6px; font-size: 9px; text-align: center; white-space: nowrap; }
+.voice-status-chip.off { color: #ff8794; border-color: #593038; background: #241519; }
 .voice-dock { border-top: 1px solid #26313a; background: #0c1519; padding: 11px; }
 .voice-dock-top { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; }.voice-dock-top .signal { color: var(--green); font-size: 11px; }.voice-dock-top div { display: flex; flex-direction: column; }.voice-dock-top strong { color: #63e6b2; font-size: 11px; }.voice-dock-top small { color: #7c8792; font-size: 9px; margin-top: 2px; }.voice-dock-top button { border: 0; background: transparent; color: #77818d; cursor: pointer; }
 .voice-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }.control { border: 1px solid #26303a; background: #151d23; border-radius: 7px; height: 31px; cursor: pointer; font-size: 13px; }.control.active { color: var(--cyan); border-color: #23576a; background: #12212a; }.control.off { color: var(--danger); border-color: #593038; background: #241519; }
