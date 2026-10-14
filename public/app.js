@@ -244,9 +244,9 @@
       else if (channel) messageInput.placeholder = `Conversar em #${channel.name}`;
     }
 
-    if (micBtn) micBtn.disabled = !hasPermission('speak');
-    if (cameraBtn) cameraBtn.disabled = !hasPermission('camera');
-    if (screenBtn) screenBtn.disabled = !hasPermission('screen_share');
+    if (micBtn) micBtn.disabled = !canUseVoicePermission('speak');
+    if (cameraBtn) cameraBtn.disabled = !canUseVoicePermission('camera');
+    if (screenBtn) screenBtn.disabled = !canUseVoicePermission('screen_share');
 
   }
 
@@ -267,6 +267,16 @@
 
   function voiceRoomName(slug) {
     return voiceNames[slug] || slug || 'Sala de voz';
+  }
+
+  function voiceChannelObject(slug) {
+    return channelCatalog.find(item => item.type === 'voice' && item.slug === slug) || null;
+  }
+
+  function canUseVoicePermission(permission, roomName = currentVoiceRoom) {
+    const room = voiceChannelObject(roomName);
+    if (room?.isLobby && ['join_voice', 'speak', 'camera', 'screen_share'].includes(permission)) return true;
+    return hasPermission(permission);
   }
 
   function applyChannelCatalog(channels, { loadIfChanged = true } = {}) {
@@ -321,18 +331,19 @@
     const text = channelCatalog.filter(item => item.type === 'text');
     const voice = channelCatalog.filter(item => item.type === 'voice');
     const canChannels = hasPermission('manage_channels');
-    const canJoinVoice = hasPermission('join_voice');
 
     textChannelsList.innerHTML = text.map(item => `
       <button class="channel text-channel${item.slug === currentChannel ? ' active' : ''}" data-channel="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button">
         <span class="channel-icon">#</span>
         <span>${escapeHtml(item.name)}</span>
-        <span class="channel-tail">${canChannels && !item.isLobby ? `<span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>` : ''}</span>
+        <span class="channel-tail">${canChannels ? `<span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>` : ''}</span>
       </button>
     `).join('');
 
-    voiceChannelsList.innerHTML = voice.map(item => `
-      <button class="channel voice-channel${item.slug === currentVoiceRoom ? ' connected' : ''}" data-room="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button"${canJoinVoice ? '' : ' disabled'}>
+    voiceChannelsList.innerHTML = voice.map(item => {
+      const canJoinThisRoom = item.isLobby || hasPermission('join_voice');
+      return `
+      <button class="channel voice-channel${item.slug === currentVoiceRoom ? ' connected' : ''}" data-room="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button"${canJoinThisRoom ? '' : ' disabled'}>
         <span class="channel-icon">🔊</span>
         <span>${escapeHtml(item.name)}</span>
         <span class="channel-tail">
@@ -341,7 +352,8 @@
         </span>
       </button>
       <div class="voice-members hidden"></div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function renderPresence(payload = lastPresence) {
@@ -456,17 +468,31 @@
     }
   }
 
+  async function moveChannel(channel, direction) {
+    if (!channel || !['up', 'down'].includes(direction)) return;
+    try {
+      const data = await api(`/api/channels/${encodeURIComponent(channel.id)}/order`, {
+        method: 'PATCH',
+        body: JSON.stringify({ direction }),
+      });
+      if (Array.isArray(data.channels)) applyChannelCatalog(data.channels, { loadIfChanged: false });
+      closeChannelMenu();
+      if (data.moved === false) notify(direction === 'up' ? 'Este canal já está no topo.' : 'Este canal já está no final.');
+      else notify(direction === 'up' ? 'Canal movido para cima.' : 'Canal movido para baixo.');
+    } catch (error) {
+      notify(error.message || 'Não foi possível mover o canal.', true);
+    }
+  }
+
   function ensureChannelMenu() {
     if (channelMenuPopover) return channelMenuPopover;
     channelMenuPopover = document.createElement('div');
     channelMenuPopover.className = 'channel-menu-popover hidden';
-    channelMenuPopover.innerHTML = `
-      <button type="button" data-channel-rename>✎ Renomear</button>
-      <button type="button" class="danger" data-channel-delete>🗑 Excluir</button>
-    `;
     document.body.appendChild(channelMenuPopover);
 
     channelMenuPopover.addEventListener('click', (event) => {
+      if (event.target.closest('[data-channel-up]')) moveChannel(channelMenuTarget, 'up');
+      if (event.target.closest('[data-channel-down]')) moveChannel(channelMenuTarget, 'down');
       if (event.target.closest('[data-channel-rename]')) renameChannel(channelMenuTarget);
       if (event.target.closest('[data-channel-delete]')) deleteChannel(channelMenuTarget);
     });
@@ -478,15 +504,25 @@
     if (!channel || !anchor) return;
     channelMenuTarget = channel;
     const menu = ensureChannelMenu();
+    const sameType = channelCatalog.filter(item => item.type === channel.type);
+    const index = sameType.findIndex(item => item.id === channel.id);
+    const canMoveUp = index > 0;
+    const canMoveDown = index >= 0 && index < sameType.length - 1;
+    menu.innerHTML = `
+      <button type="button" data-channel-up${canMoveUp ? '' : ' disabled'}>↑ Mover para cima</button>
+      <button type="button" data-channel-down${canMoveDown ? '' : ' disabled'}>↓ Mover para baixo</button>
+      ${channel.isLobby ? '' : '<div class="channel-menu-separator"></div><button type="button" data-channel-rename>✎ Renomear</button><button type="button" class="danger" data-channel-delete>🗑 Excluir</button>'}
+    `;
     menu.classList.remove('hidden');
 
     const rect = anchor.getBoundingClientRect();
-    const width = 170;
+    const width = 190;
     const gap = 6;
     let left = rect.right - width;
     if (left < gap) left = gap;
     let top = rect.bottom + gap;
-    if (top + 90 > window.innerHeight) top = Math.max(gap, rect.top - 90);
+    const estimatedHeight = channel.isLobby ? 86 : 170;
+    if (top + estimatedHeight > window.innerHeight) top = Math.max(gap, rect.top - estimatedHeight);
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
   }
@@ -1155,7 +1191,7 @@
   }
 
   function prefetchVoiceToken(roomName) {
-    if (!roomName || !sessionId || !hasPermission('join_voice')) return;
+    if (!roomName || !sessionId || !canUseVoicePermission('join_voice', roomName)) return;
     const cached = voiceTokenCache.get(roomName);
     if (cached && cached.expiresAt > Date.now()) return;
     if (voiceTokenRequests.has(roomName)) return;
@@ -1221,8 +1257,8 @@
   }
 
   async function joinVoice(roomName) {
-    if (!hasPermission('join_voice')) {
-      notify('Seu cargo não permite entrar em salas de voz.', true);
+    if (!canUseVoicePermission('join_voice', roomName)) {
+      notify('Seu cargo não permite entrar nesta sala de voz.', true);
       return;
     }
     if (currentVoiceRoom === roomName && lkRoom) {
@@ -1322,7 +1358,7 @@
       setVoiceConnectionStatus('connected');
       updateSpeakingIndicators(room.activeSpeakers || []);
 
-      if (hasPermission('speak')) {
+      if (canUseVoicePermission('speak', roomName)) {
         try {
           await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
           micEnabled = true;
@@ -1528,7 +1564,7 @@
 
   micBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
-    if (!hasPermission('speak')) return notify('Seu cargo não permite usar o microfone.', true);
+    if (!canUseVoicePermission('speak')) return notify('Seu cargo não permite usar o microfone nesta sala.', true);
     try {
       micEnabled = !micEnabled;
       await lkRoom.localParticipant.setMicrophoneEnabled(
@@ -1590,7 +1626,7 @@
 
   cameraBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
-    if (!hasPermission('camera')) return notify('Seu cargo não permite usar câmera.', true);
+    if (!canUseVoicePermission('camera')) return notify('Seu cargo não permite usar câmera nesta sala.', true);
     try {
       cameraEnabled = !cameraEnabled;
 
@@ -1621,7 +1657,7 @@
 
   screenBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
-    if (!hasPermission('screen_share')) return notify('Seu cargo não permite compartilhar a tela.', true);
+    if (!canUseVoicePermission('screen_share')) return notify('Seu cargo não permite compartilhar a tela nesta sala.', true);
     try {
       screenEnabled = !screenEnabled;
       if (screenEnabled) {
@@ -1689,9 +1725,9 @@
       noiseBtn.setAttribute('aria-label', noiseBtn.title);
     }
 
-    micBtn.disabled = !hasPermission('speak');
-    cameraBtn.disabled = !hasPermission('camera');
-    screenBtn.disabled = !hasPermission('screen_share');
+    micBtn.disabled = !canUseVoicePermission('speak');
+    cameraBtn.disabled = !canUseVoicePermission('camera');
+    screenBtn.disabled = !canUseVoicePermission('screen_share');
     cameraBtn.classList.toggle('active', cameraEnabled); cameraBtn.textContent = cameraEnabled ? '◉' : '◎';
     screenBtn.classList.toggle('active', screenEnabled);
   }
@@ -2029,14 +2065,14 @@
     const body = adminBody();
     body.innerHTML = `
       <div class="admin-channel-page">
-        <div class="admin-page-copy"><h3>Quem pode ver cada canal</h3><p>Usuários sem cargo veem somente a Sala de Todos. ADMIN e ADM Master sempre enxergam tudo.</p></div>
+        <div class="admin-page-copy"><h3>Quem pode ver cada canal</h3><p>Usuários sem cargo veem as Salas de Todos de texto e voz. ADMIN e ADM Master sempre enxergam tudo. A ordem dos canais pode ser alterada pelo menu ⋮ ao lado de cada canal.</p></div>
         <div class="admin-channel-list">
           ${adminChannels.map(channel => {
             const selected = new Set(channel.roleIds || []);
             return `
               <section class="admin-channel-card" data-access-channel="${escapeHtml(channel.id)}">
                 <div class="admin-channel-card-head"><strong>${channel.type === 'text' ? '#' : '🔊'} ${escapeHtml(channel.name)}</strong>${channel.isLobby ? '<span class="lobby-pill">Todos</span>' : ''}</div>
-                ${channel.isLobby ? '<p>A Sala de Todos é sempre visível, inclusive para quem ainda não tem cargo.</p>' : `
+                ${channel.isLobby ? '<p>Esta Sala de Todos é sempre visível e utilizável, inclusive para quem ainda não tem cargo.</p>' : `
                   <div class="admin-channel-role-grid">
                     ${adminRoles.filter(role => role.systemKey !== 'admin').map(role => `
                       <label><input type="checkbox" value="${escapeHtml(role.id)}" ${selected.has(role.id) ? 'checked' : ''}/><span class="role-color-dot" style="--role-color:${escapeHtml(role.color)}"></span><span>${escapeHtml(role.name)}</span></label>
