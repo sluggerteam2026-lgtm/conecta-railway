@@ -1,0 +1,433 @@
+(() => {
+  const landing = document.querySelector('#landing');
+  const app = document.querySelector('#app');
+  const loginForm = document.querySelector('#loginForm');
+  const loginBtn = document.querySelector('#loginBtn');
+  const nameInput = document.querySelector('#nameInput');
+  const codeInput = document.querySelector('#codeInput');
+  const toast = document.querySelector('#toast');
+  const messages = document.querySelector('#messages');
+  const messageForm = document.querySelector('#messageForm');
+  const messageInput = document.querySelector('#messageInput');
+  const membersList = document.querySelector('#membersList');
+  const membersCount = document.querySelector('#membersCount');
+  const onlineCount = document.querySelector('#onlineCount');
+  const membersPanel = document.querySelector('#membersPanel');
+  const membersToggle = document.querySelector('#membersToggle');
+  const logoutBtn = document.querySelector('#logoutBtn');
+  const selfName = document.querySelector('#selfName');
+  const selfAvatar = document.querySelector('#selfAvatar');
+  const voiceDock = document.querySelector('#voiceDock');
+  const voiceRoomLabel = document.querySelector('#voiceRoomLabel');
+  const leaveVoiceBtn = document.querySelector('#leaveVoiceBtn');
+  const micBtn = document.querySelector('#micBtn');
+  const cameraBtn = document.querySelector('#cameraBtn');
+  const screenBtn = document.querySelector('#screenBtn');
+  const callStage = document.querySelector('#callStage');
+  const callStageTitle = document.querySelector('#callStageTitle');
+  const collapseCallBtn = document.querySelector('#collapseCallBtn');
+  const videoGrid = document.querySelector('#videoGrid');
+  const emptyVideo = document.querySelector('#emptyVideo');
+  const audioBin = document.querySelector('#audioBin');
+
+  const channelNames = {
+    geral: ['geral', 'O papo principal da turma'],
+    jogos: ['jogos', 'Partidas, convites e aquele GG'],
+    'links-e-assuntos': ['links-e-assuntos', 'Links, vídeos e assuntos aleatórios'],
+  };
+  const voiceNames = {
+    'sala-da-turma': 'Sala da turma',
+    'jogando-juntos': 'Jogando juntos',
+    'cinema-live': 'Cinema & live',
+  };
+
+  let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
+  let profileName = sessionStorage.getItem('conecta.name') || '';
+  let socket = null;
+  let currentChannel = 'geral';
+  let currentVoiceRoom = null;
+  let lkRoom = null;
+  let micEnabled = false;
+  let cameraEnabled = false;
+  let screenEnabled = false;
+  let callCollapsed = false;
+
+  function notify(text, isError = false) {
+    toast.textContent = text;
+    toast.classList.toggle('error', isError);
+    toast.classList.add('show');
+    clearTimeout(notify.timer);
+    notify.timer = setTimeout(() => toast.classList.remove('show'), 3200);
+  }
+
+  function initials(name) {
+    return String(name || '?').split(/\s+/).slice(0, 2).map(v => v[0]).join('').toUpperCase();
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  }
+
+  async function api(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
+    const response = await fetch(path, { ...options, headers });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Algo deu errado.');
+    return data;
+  }
+
+  loginForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    loginBtn.disabled = true;
+    try {
+      const data = await api('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({ name: nameInput.value, code: codeInput.value }),
+      });
+      sessionId = data.sessionId;
+      profileName = data.name;
+      sessionStorage.setItem('conecta.sessionId', sessionId);
+      sessionStorage.setItem('conecta.name', profileName);
+      enterApp();
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      loginBtn.disabled = false;
+    }
+  });
+
+  function enterApp() {
+    landing.classList.add('hidden');
+    app.classList.remove('hidden');
+    selfName.textContent = profileName;
+    selfAvatar.textContent = initials(profileName);
+    connectSocket();
+  }
+
+  function connectSocket() {
+    if (socket) socket.disconnect();
+    socket = io({ auth: { sessionId } });
+
+    socket.on('connect_error', (error) => {
+      notify(error.message || 'Não foi possível entrar na turma.', true);
+      if (/sessão/i.test(error.message || '')) signOut();
+    });
+
+    socket.on('presence', ({ users, total, max }) => {
+      onlineCount.textContent = `${total} online`;
+      membersCount.textContent = `${total} / ${max}`;
+      membersList.innerHTML = users.map(user => `
+        <div class="member">
+          <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
+          <div class="member-info"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong><span>${user.voiceRoom ? `em ${escapeHtml(voiceNames[user.voiceRoom] || 'voz')}` : 'online'}</span></div>
+        </div>
+      `).join('');
+
+      document.querySelectorAll('.voice-channel').forEach(button => {
+        const room = button.dataset.room;
+        const people = users.filter(user => user.voiceRoom === room);
+        const count = button.querySelector('[data-count]');
+        if (count) count.textContent = people.length;
+
+        let list = button.nextElementSibling;
+        if (!list || !list.classList.contains('voice-members')) {
+          list = document.createElement('div');
+          list.className = 'voice-members';
+          button.insertAdjacentElement('afterend', list);
+        }
+
+        list.innerHTML = people.map(user => `
+          <div class="voice-member" title="${escapeHtml(user.name)}">
+            <span class="voice-member-dot"></span>
+            <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
+          </div>
+        `).join('');
+        list.classList.toggle('hidden', people.length === 0);
+      });
+    });
+
+    socket.on('chat-message', (msg) => {
+      if (msg.channel !== currentChannel) return;
+      appendMessage(msg);
+    });
+  }
+
+  function clearMessagesForChannel() {
+    messages.innerHTML = `
+      <div class="welcome-message">
+        <div class="hash-bubble">#</div>
+        <h2>Bem-vindo ao <span>#${escapeHtml(channelNames[currentChannel][0])}</span></h2>
+        <p>As mensagens aparecem ao vivo e não ficam salvas no servidor.</p>
+      </div>`;
+  }
+
+  document.querySelectorAll('.text-channel').forEach(button => {
+    button.addEventListener('click', () => {
+      const channel = button.dataset.channel;
+      if (channel === currentChannel) return;
+      currentChannel = channel;
+      document.querySelectorAll('.text-channel').forEach(el => el.classList.toggle('active', el === button));
+      socket?.emit('join-text-channel', channel);
+      document.querySelector('#channelTitle').textContent = channelNames[channel][0];
+      document.querySelector('#channelSubtitle').textContent = channelNames[channel][1];
+      messageInput.placeholder = `Conversar em #${channelNames[channel][0]}`;
+      clearMessagesForChannel();
+    });
+  });
+
+  messageForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = messageInput.value.trim();
+    if (!text || !socket?.connected) return;
+    socket.emit('chat-message', { channel: currentChannel, text });
+    messageInput.value = '';
+  });
+
+  function appendMessage(msg) {
+    const div = document.createElement('div');
+    div.className = 'message';
+    const time = new Date(msg.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    div.innerHTML = `
+      <div class="avatar">${escapeHtml(initials(msg.name))}</div>
+      <div><div class="message-head"><strong>${escapeHtml(msg.name)}</strong><time>${time}</time></div><p>${escapeHtml(msg.text)}</p></div>`;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  document.querySelectorAll('.voice-channel').forEach(button => {
+    button.addEventListener('click', () => joinVoice(button.dataset.room));
+  });
+
+  async function joinVoice(roomName) {
+    if (currentVoiceRoom === roomName && lkRoom) {
+      callCollapsed = false;
+      callStage.classList.remove('hidden');
+      return;
+    }
+    try {
+      await leaveVoice(false);
+      const data = await api('/api/livekit-token', {
+        method: 'POST',
+        body: JSON.stringify({ room: roomName }),
+      });
+
+      const { Room, RoomEvent, Track } = LivekitClient;
+      lkRoom = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+        publishDefaults: {
+          screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+          degradationPreference: 'maintain-framerate',
+        },
+      });
+
+      lkRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        if (track.kind === Track.Kind.Audio) {
+          const el = track.attach();
+          el.autoplay = true;
+          audioBin.appendChild(el);
+        } else if (track.kind === Track.Kind.Video) {
+          addVideoTrack(track, participant.name || participant.identity, track.source === Track.Source.ScreenShare, false);
+        }
+      });
+
+      lkRoom.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
+      lkRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
+        document.querySelectorAll(`[data-participant="${CSS.escape(participant.identity)}"]`).forEach(el => el.remove());
+        updateEmptyVideo();
+      });
+      lkRoom.on(RoomEvent.Disconnected, () => {
+        if (currentVoiceRoom) finishVoiceUi();
+      });
+
+      await lkRoom.connect(data.url, data.token);
+      currentVoiceRoom = roomName;
+      socket?.emit('voice-state', roomName);
+      voiceDock.classList.remove('hidden');
+      voiceRoomLabel.textContent = voiceNames[roomName];
+      callStageTitle.textContent = voiceNames[roomName];
+      callStage.classList.remove('hidden');
+      callCollapsed = false;
+      document.querySelectorAll('.voice-channel').forEach(el => el.classList.toggle('connected', el.dataset.room === roomName));
+
+      try {
+        await lkRoom.localParticipant.setMicrophoneEnabled(true);
+        micEnabled = true;
+      } catch {
+        micEnabled = false;
+        notify('Entre na sala de voz. Se quiser falar, permita o microfone no navegador.', true);
+      }
+      updateControlButtons();
+      refreshLocalVideo();
+    } catch (error) {
+      console.error(error);
+      notify(error.message || 'Não foi possível entrar na sala de voz.', true);
+      await leaveVoice(false);
+    }
+  }
+
+  function addVideoTrack(track, label, isScreen, local) {
+    const sid = track.sid || track.mediaStreamTrack?.id || Math.random().toString(36).slice(2);
+    const id = `track-${sid.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    document.getElementById(id)?.remove();
+    const tile = document.createElement('div');
+    tile.id = id;
+    tile.className = `video-tile${isScreen ? ' screen' : ''}`;
+    if (!local && track?.participant?.identity) tile.dataset.participant = track.participant.identity;
+    const video = track.attach();
+    video.autoplay = true;
+    video.playsInline = true;
+    if (local && !isScreen) video.muted = true;
+    tile.appendChild(video);
+    const badge = document.createElement('div');
+    badge.className = 'video-label';
+    badge.textContent = `${label}${local ? ' (você)' : ''}${isScreen ? ' • tela' : ''}`;
+    tile.appendChild(badge);
+    videoGrid.appendChild(tile);
+    updateEmptyVideo();
+  }
+
+  function removeTrack(track) {
+    if (!track) return;
+    track.detach().forEach(el => el.remove());
+    const sid = track.sid || track.mediaStreamTrack?.id || '';
+    if (sid) document.getElementById(`track-${sid.replace(/[^a-zA-Z0-9_-]/g, '')}`)?.remove();
+    updateEmptyVideo();
+  }
+
+  function clearLocalTiles() {
+    document.querySelectorAll('[data-local="true"]').forEach(el => el.remove());
+  }
+
+  function refreshLocalVideo() {
+    clearLocalTiles();
+    if (!lkRoom) return updateEmptyVideo();
+    for (const publication of lkRoom.localParticipant.videoTrackPublications.values()) {
+      const track = publication.track;
+      if (!track) continue;
+      const isScreen = publication.source === LivekitClient.Track.Source.ScreenShare;
+      const sid = track.sid || track.mediaStreamTrack?.id || Math.random().toString(36).slice(2);
+      const tile = document.createElement('div');
+      tile.id = `track-${String(sid).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+      tile.dataset.local = 'true';
+      tile.className = `video-tile${isScreen ? ' screen' : ''}`;
+      const video = track.attach();
+      video.autoplay = true; video.playsInline = true; video.muted = true;
+      tile.appendChild(video);
+      const badge = document.createElement('div'); badge.className = 'video-label'; badge.textContent = `${profileName} (você)${isScreen ? ' • tela' : ''}`; tile.appendChild(badge);
+      videoGrid.appendChild(tile);
+    }
+    updateEmptyVideo();
+  }
+
+  function updateEmptyVideo() {
+    const hasTiles = videoGrid.querySelector('.video-tile');
+    emptyVideo.classList.toggle('hidden', Boolean(hasTiles));
+  }
+
+  micBtn.addEventListener('click', async () => {
+    if (!lkRoom) return;
+    try {
+      micEnabled = !micEnabled;
+      await lkRoom.localParticipant.setMicrophoneEnabled(micEnabled);
+      updateControlButtons();
+    } catch (error) {
+      micEnabled = false;
+      updateControlButtons();
+      notify('Não consegui acessar o microfone.', true);
+    }
+  });
+
+  cameraBtn.addEventListener('click', async () => {
+    if (!lkRoom) return;
+    try {
+      cameraEnabled = !cameraEnabled;
+      await lkRoom.localParticipant.setCameraEnabled(cameraEnabled);
+      setTimeout(refreshLocalVideo, 100);
+      updateControlButtons();
+    } catch (error) {
+      cameraEnabled = false;
+      updateControlButtons();
+      notify('Não consegui acessar a câmera.', true);
+    }
+  });
+
+  screenBtn.addEventListener('click', async () => {
+    if (!lkRoom) return;
+    try {
+      screenEnabled = !screenEnabled;
+      if (screenEnabled) {
+        await lkRoom.localParticipant.setScreenShareEnabled(
+          true,
+          {
+            resolution: { width: 1920, height: 1080, frameRate: 60 },
+            contentHint: 'motion',
+          },
+          {
+            videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+            degradationPreference: 'maintain-framerate',
+          },
+        );
+      } else {
+        await lkRoom.localParticipant.setScreenShareEnabled(false);
+      }
+      setTimeout(refreshLocalVideo, 100);
+      updateControlButtons();
+    } catch (error) {
+      screenEnabled = false;
+      updateControlButtons();
+      notify('O compartilhamento de tela foi cancelado ou bloqueado.', true);
+    }
+  });
+
+  function updateControlButtons() {
+    micBtn.classList.toggle('active', micEnabled); micBtn.classList.toggle('off', !micEnabled); micBtn.textContent = micEnabled ? '🎙' : '🔇';
+    cameraBtn.classList.toggle('active', cameraEnabled); cameraBtn.textContent = cameraEnabled ? '◉' : '◎';
+    screenBtn.classList.toggle('active', screenEnabled);
+  }
+
+  leaveVoiceBtn.addEventListener('click', () => leaveVoice(true));
+  async function leaveVoice(showToast = true) {
+    if (lkRoom) {
+      try { await lkRoom.disconnect(); } catch {}
+      lkRoom = null;
+    }
+    if (currentVoiceRoom) socket?.emit('voice-state', null);
+    finishVoiceUi();
+    if (showToast) notify('Você saiu da sala de voz.');
+  }
+
+  function finishVoiceUi() {
+    currentVoiceRoom = null;
+    micEnabled = cameraEnabled = screenEnabled = false;
+    voiceDock.classList.add('hidden');
+    callStage.classList.add('hidden');
+    document.querySelectorAll('.voice-channel').forEach(el => el.classList.remove('connected'));
+    document.querySelectorAll('.video-tile').forEach(el => el.remove());
+    audioBin.innerHTML = '';
+    updateControlButtons();
+    updateEmptyVideo();
+  }
+
+  collapseCallBtn.addEventListener('click', () => {
+    callCollapsed = !callCollapsed;
+    if (callCollapsed) callStage.classList.add('hidden');
+  });
+
+  membersToggle.addEventListener('click', () => membersPanel.classList.toggle('open'));
+  logoutBtn.addEventListener('click', signOut);
+  function signOut() {
+    leaveVoice(false);
+    socket?.disconnect();
+    sessionStorage.removeItem('conecta.sessionId');
+    sessionStorage.removeItem('conecta.name');
+    location.reload();
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (currentVoiceRoom) socket?.emit('voice-state', null);
+  });
+
+  if (sessionId && profileName) enterApp();
+})();
