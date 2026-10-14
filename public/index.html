@@ -81,6 +81,10 @@
 
       <div id="voiceDock" class="voice-dock hidden">
         <div class="voice-dock-top"><span class="signal">▂▄▆</span><div><strong>Voz conectada</strong><small id="voiceRoomLabel">Sala da turma</small></div><button id="leaveVoiceBtn" title="Desconectar">✕</button></div>
+        <div class="voice-status-line" aria-live="polite">
+          <span id="micStatusText" class="voice-status-chip">🎙 Microfone ligado</span>
+          <span id="soundStatusText" class="voice-status-chip">🔊 Som ligado</span>
+        </div>
         <div class="voice-actions">
           <button id="micBtn" class="control active" title="Mutar microfone" aria-label="Mutar microfone">🎙</button>
           <button id="audioBtn" class="control active" title="Silenciar áudio da sala" aria-label="Silenciar áudio da sala">🔊</button>
