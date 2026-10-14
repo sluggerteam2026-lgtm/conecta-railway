@@ -49,10 +49,13 @@
       <button id="logoutBtn" class="server-icon logout" title="Sair"><span>↪</span></button>
     </aside>
 
-    <aside class="channels-panel">
+    <button id="mobileDrawerBackdrop" class="mobile-drawer-backdrop" type="button" aria-label="Fechar painel"></button>
+
+    <aside id="channelsPanel" class="channels-panel">
       <div class="server-header">
         <strong>Conecta</strong>
         <span class="server-chevron">⌄</span>
+        <button id="mobileChannelsClose" class="mobile-drawer-close mobile-only" type="button" title="Fechar" aria-label="Fechar canais">×</button>
       </div>
 
       <div class="channel-scroll">
@@ -101,6 +104,7 @@
     <section class="main-panel">
       <header class="chat-head">
         <div class="channel-title">
+          <button id="mobileChannelsToggle" class="head-button mobile-only mobile-channels-toggle" type="button" title="Canais e voz" aria-label="Abrir canais e voz">☰</button>
           <span class="channel-title-icon">#</span>
           <strong id="channelTitle">geral</strong>
           <span class="head-divider"></span>
