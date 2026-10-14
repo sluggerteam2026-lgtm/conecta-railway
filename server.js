@@ -4,6 +4,14 @@ import http from 'http';
 import { Server } from 'socket.io';
 import { AccessToken } from 'livekit-server-sdk';
 import crypto from 'crypto';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 
 const app = express();
 const server = http.createServer(app);
@@ -25,7 +33,14 @@ const voiceState = new Map();
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
-app.use(express.static('public', { extensions: ['html'] }));
+app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
+
+app.get('/', (_req, res) => {
+  if (!existsSync(INDEX_FILE)) {
+    return res.status(500).send('Conecta: public/index.html não foi encontrado no deploy.');
+  }
+  res.sendFile(INDEX_FILE);
+});
 
 function cleanName(value) {
   return String(value || '')
@@ -76,6 +91,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     service: 'Conecta',
     livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
+    frontendConfigured: existsSync(INDEX_FILE),
     online: onlineSessionsCount(),
     maxUsers: MAX_USERS,
   });
