@@ -3,10 +3,13 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import { AccessToken } from 'livekit-server-sdk';
+import pg from 'pg';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
+
+const { Pool } = pg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,10 +28,25 @@ const MAX_USERS = Number(process.env.MAX_USERS || 20);
 const LIVEKIT_URL = String(process.env.LIVEKIT_URL || '');
 const LIVEKIT_API_KEY = String(process.env.LIVEKIT_API_KEY || '');
 const LIVEKIT_API_SECRET = String(process.env.LIVEKIT_API_SECRET || '');
+const DATABASE_URL = String(process.env.DATABASE_URL || '');
+
+const TEXT_CHANNELS = new Set(['geral', 'jogos', 'links-e-assuntos']);
+const VOICE_ROOMS = new Set(['sala-da-turma', 'jogando-juntos', 'cinema-live']);
 
 const sessions = new Map();
 const socketsBySession = new Map();
 const voiceState = new Map();
+
+let databaseReady = false;
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: DATABASE_URL.includes('railway.internal') ? false : { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+    })
+  : null;
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
@@ -47,6 +65,16 @@ function cleanName(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 32);
+}
+
+function cleanUserKey(value) {
+  const key = String(value || '').trim();
+  if (/^[a-zA-Z0-9_-]{8,128}$/.test(key)) return key;
+  return crypto.randomUUID();
+}
+
+function cleanMessage(value) {
+  return String(value || '').trim().slice(0, 1500);
 }
 
 function onlineSessionsCount() {
@@ -88,11 +116,52 @@ function getSession(req) {
   return { token, session };
 }
 
+function rowToMessage(row, mine = false) {
+  return {
+    id: row.id,
+    channel: row.channel,
+    name: row.author_name,
+    text: row.body,
+    ts: new Date(row.created_at).getTime(),
+    editedAt: row.edited_at ? new Date(row.edited_at).getTime() : null,
+    mine,
+  };
+}
+
+async function initDatabase() {
+  if (!pool) {
+    console.warn('Conecta: DATABASE_URL não configurada. O chat persistente ficará indisponível.');
+    return;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id UUID PRIMARY KEY,
+      channel VARCHAR(64) NOT NULL,
+      author_key VARCHAR(128) NOT NULL,
+      author_name VARCHAR(32) NOT NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      edited_at TIMESTAMPTZ NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS messages_channel_created_idx
+    ON messages (channel, created_at DESC)
+  `);
+
+  databaseReady = true;
+  console.log('Conecta: PostgreSQL conectado e tabela de mensagens pronta.');
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'Conecta',
     livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
+    databaseConfigured: Boolean(DATABASE_URL),
+    databaseReady,
     frontendConfigured: existsSync(INDEX_FILE),
     online: onlineSessionsCount(),
     maxUsers: MAX_USERS,
@@ -108,9 +177,47 @@ app.post('/api/login', (req, res) => {
     return res.status(429).json({ error: `A sala atingiu o limite de ${MAX_USERS} pessoas.` });
   }
 
+  const userKey = cleanUserKey(req.body?.userKey);
   const sessionId = crypto.randomUUID();
-  sessions.set(sessionId, { name, createdAt: Date.now(), lastSeen: Date.now() });
-  res.json({ sessionId, name, maxUsers: MAX_USERS });
+  sessions.set(sessionId, { name, userKey, createdAt: Date.now(), lastSeen: Date.now() });
+  res.json({ sessionId, name, userKey, maxUsers: MAX_USERS });
+});
+
+app.get('/api/messages/:channel', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    if (!databaseReady || !pool) {
+      return res.status(503).json({ error: 'O banco de mensagens ainda não está disponível.' });
+    }
+
+    const channel = String(req.params.channel || '');
+    if (!TEXT_CHANNELS.has(channel)) {
+      return res.status(400).json({ error: 'Canal de texto inválido.' });
+    }
+
+    const result = await pool.query(
+      `
+        SELECT id, channel, author_key, author_name, body, created_at, edited_at
+        FROM (
+          SELECT id, channel, author_key, author_name, body, created_at, edited_at
+          FROM messages
+          WHERE channel = $1
+          ORDER BY created_at DESC
+          LIMIT 100
+        ) recent
+        ORDER BY created_at ASC
+      `,
+      [channel],
+    );
+
+    res.json({
+      messages: result.rows.map(row => rowToMessage(row, row.author_key === auth.session.userKey)),
+    });
+  } catch (error) {
+    console.error('Erro ao carregar mensagens:', error);
+    res.status(500).json({ error: 'Não foi possível carregar as mensagens.' });
+  }
 });
 
 app.post('/api/livekit-token', async (req, res) => {
@@ -122,8 +229,7 @@ app.post('/api/livekit-token', async (req, res) => {
     }
 
     const room = String(req.body?.room || '').trim().slice(0, 64);
-    const allowedRooms = new Set(['sala-da-turma', 'jogando-juntos', 'cinema-live']);
-    if (!allowedRooms.has(room)) {
+    if (!VOICE_ROOMS.has(room)) {
       return res.status(400).json({ error: 'Sala de voz inválida.' });
     }
 
@@ -164,11 +270,12 @@ io.use((socket, next) => {
 
   socket.data.sessionId = sessionId;
   socket.data.name = session.name;
+  socket.data.userKey = session.userKey;
   next();
 });
 
 io.on('connection', (socket) => {
-  const { sessionId, name } = socket.data;
+  const { sessionId, name, userKey } = socket.data;
   const previous = socketsBySession.get(sessionId);
   if (previous && previous !== socket.id) {
     io.sockets.sockets.get(previous)?.disconnect(true);
@@ -179,34 +286,128 @@ io.on('connection', (socket) => {
   emitPresence();
 
   socket.on('join-text-channel', (channel) => {
-    const allowed = new Set(['geral', 'jogos', 'links-e-assuntos']);
-    if (!allowed.has(channel)) return;
+    if (!TEXT_CHANNELS.has(channel)) return;
     if (socket.data.textChannel) socket.leave(`text:${socket.data.textChannel}`);
     socket.data.textChannel = channel;
     socket.join(`text:${channel}`);
   });
 
-  socket.on('chat-message', (payload = {}) => {
-    const channel = String(payload.channel || '');
-    if (channel !== socket.data.textChannel) return;
-    const allowed = new Set(['geral', 'jogos', 'links-e-assuntos']);
-    if (!allowed.has(channel)) return;
+  socket.on('chat-message', async (payload = {}) => {
+    try {
+      const channel = String(payload.channel || '');
+      if (channel !== socket.data.textChannel) return;
+      if (!TEXT_CHANNELS.has(channel)) return;
+      if (!databaseReady || !pool) {
+        socket.emit('chat-error', { message: 'O banco de mensagens está indisponível no momento.' });
+        return;
+      }
 
-    const text = String(payload.text || '').trim().slice(0, 1500);
-    if (!text) return;
+      const text = cleanMessage(payload.text);
+      if (!text) return;
 
-    io.to(`text:${channel}`).emit('chat-message', {
-      id: crypto.randomUUID(),
-      channel,
-      name,
-      text,
-      ts: Date.now(),
-    });
+      const id = crypto.randomUUID();
+      const createdAt = new Date();
+
+      await pool.query(
+        `
+          INSERT INTO messages (id, channel, author_key, author_name, body, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [id, channel, userKey, name, text, createdAt],
+      );
+
+      const message = {
+        id,
+        channel,
+        name,
+        text,
+        ts: createdAt.getTime(),
+        editedAt: null,
+      };
+
+      socket.emit('chat-message', { ...message, mine: true });
+      socket.to(`text:${channel}`).emit('chat-message', { ...message, mine: false });
+    } catch (error) {
+      console.error('Erro ao salvar mensagem:', error);
+      socket.emit('chat-error', { message: 'Não foi possível salvar a mensagem.' });
+    }
+  });
+
+  socket.on('edit-message', async (payload = {}) => {
+    try {
+      if (!databaseReady || !pool) {
+        socket.emit('chat-error', { message: 'O banco de mensagens está indisponível no momento.' });
+        return;
+      }
+
+      const id = String(payload.id || '').trim();
+      const text = cleanMessage(payload.text);
+      if (!id || !text) return;
+
+      const result = await pool.query(
+        `
+          UPDATE messages
+          SET body = $1, edited_at = NOW()
+          WHERE id = $2 AND author_key = $3
+          RETURNING id, channel, body, edited_at
+        `,
+        [text, id, userKey],
+      );
+
+      if (!result.rowCount) {
+        socket.emit('chat-error', { message: 'Você só pode editar suas próprias mensagens.' });
+        return;
+      }
+
+      const row = result.rows[0];
+      io.to(`text:${row.channel}`).emit('message-edited', {
+        id: row.id,
+        channel: row.channel,
+        text: row.body,
+        editedAt: new Date(row.edited_at).getTime(),
+      });
+    } catch (error) {
+      console.error('Erro ao editar mensagem:', error);
+      socket.emit('chat-error', { message: 'Não foi possível editar a mensagem.' });
+    }
+  });
+
+  socket.on('delete-message', async (payload = {}) => {
+    try {
+      if (!databaseReady || !pool) {
+        socket.emit('chat-error', { message: 'O banco de mensagens está indisponível no momento.' });
+        return;
+      }
+
+      const id = String(payload.id || '').trim();
+      if (!id) return;
+
+      const result = await pool.query(
+        `
+          DELETE FROM messages
+          WHERE id = $1 AND author_key = $2
+          RETURNING id, channel
+        `,
+        [id, userKey],
+      );
+
+      if (!result.rowCount) {
+        socket.emit('chat-error', { message: 'Você só pode excluir suas próprias mensagens.' });
+        return;
+      }
+
+      const row = result.rows[0];
+      io.to(`text:${row.channel}`).emit('message-deleted', {
+        id: row.id,
+        channel: row.channel,
+      });
+    } catch (error) {
+      console.error('Erro ao excluir mensagem:', error);
+      socket.emit('chat-error', { message: 'Não foi possível excluir a mensagem.' });
+    }
   });
 
   socket.on('voice-state', (payload) => {
-    const allowed = new Set(['sala-da-turma', 'jogando-juntos', 'cinema-live']);
-
     if (payload === null || payload === '') {
       voiceState.delete(sessionId);
       emitPresence();
@@ -215,7 +416,7 @@ io.on('connection', (socket) => {
 
     // Compatibilidade com versões antigas que enviavam apenas o nome da sala.
     if (typeof payload === 'string') {
-      if (allowed.has(payload)) {
+      if (VOICE_ROOMS.has(payload)) {
         voiceState.set(sessionId, { room: payload, micEnabled: true, soundEnabled: true });
       }
       emitPresence();
@@ -223,7 +424,7 @@ io.on('connection', (socket) => {
     }
 
     const room = String(payload?.room || '').trim();
-    if (!allowed.has(room)) return;
+    if (!VOICE_ROOMS.has(room)) return;
 
     voiceState.set(sessionId, {
       room,
@@ -248,6 +449,13 @@ setInterval(() => {
     if (!socketsBySession.has(id) && session.lastSeen < cutoff) sessions.delete(id);
   }
 }, 1000 * 60 * 30).unref();
+
+try {
+  await initDatabase();
+} catch (error) {
+  databaseReady = false;
+  console.error('Conecta: não foi possível preparar o PostgreSQL:', error);
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Conecta rodando em http://localhost:${PORT}`);
