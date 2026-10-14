@@ -93,6 +93,9 @@
   const voiceTokenRequests = new Map();
   const participantVolumes = new Map();
   const participantMuted = new Map();
+  const screenAudioVolumes = new Map();
+  const screenAudioMuted = new Map();
+  let stoppingScreenShare = false;
   let volumePopover = null;
   let volumePopoverIdentity = '';
   let historyLoadToken = 0;
@@ -560,20 +563,51 @@
     return participantMuted.get(identity) === true;
   }
 
+  function getScreenAudioVolume(identity) {
+    return screenAudioVolumes.has(identity) ? screenAudioVolumes.get(identity) : 1;
+  }
+
+  function isScreenAudioMuted(identity) {
+    return screenAudioMuted.get(identity) === true;
+  }
+
+  function isScreenAudioSource(source) {
+    const known = LivekitClient?.Track?.Source?.ScreenShareAudio;
+    return source === known || source === 'screen_share_audio';
+  }
+
+  function applyAudioElementState(el) {
+    if (!el) return;
+    const identity = el.dataset.participant || '';
+    const screenAudio = el.dataset.audioSource === 'screen';
+    const individuallyMuted = screenAudio ? isScreenAudioMuted(identity) : isParticipantMuted(identity);
+    el.muted = !roomSoundEnabled || individuallyMuted;
+    el.volume = screenAudio
+      ? getScreenAudioVolume(identity)
+      : (identity ? getParticipantVolume(identity) : 1);
+  }
+
   function applyParticipantAudioState(identity) {
     if (!identity) return;
     audioBin.querySelectorAll('audio').forEach(el => {
-      if (el.dataset.participant !== identity) return;
-      el.muted = !roomSoundEnabled || isParticipantMuted(identity);
-      el.volume = getParticipantVolume(identity);
+      if (el.dataset.participant !== identity || el.dataset.audioSource === 'screen') return;
+      applyAudioElementState(el);
     });
   }
 
-  function applyRoomSoundState() {
+  function applyScreenAudioState(identity) {
+    if (!identity) return;
     audioBin.querySelectorAll('audio').forEach(el => {
-      const identity = el.dataset.participant || '';
-      el.muted = !roomSoundEnabled || (identity && isParticipantMuted(identity));
-      el.volume = identity ? getParticipantVolume(identity) : 1;
+      if (el.dataset.participant !== identity || el.dataset.audioSource !== 'screen') return;
+      applyAudioElementState(el);
+    });
+    updateScreenAudioControls(identity);
+  }
+
+  function applyRoomSoundState() {
+    audioBin.querySelectorAll('audio').forEach(applyAudioElementState);
+    document.querySelectorAll('.video-tile.screen[data-participant]').forEach(tile => {
+      updateScreenAudioControls(tile.dataset.participant || '');
     });
   }
 
@@ -1289,23 +1323,33 @@
 
       room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (track.kind === Track.Kind.Audio) {
+          const source = publication?.source ?? track.source;
+          const screenAudio = isScreenAudioSource(source);
           const el = track.attach();
           el.autoplay = true;
           el.dataset.participant = participant.identity;
+          el.dataset.audioSource = screenAudio ? 'screen' : 'microphone';
           audioBin.appendChild(el);
-          applyParticipantAudioState(participant.identity);
+          applyAudioElementState(el);
+          if (screenAudio) updateScreenAudioControls(participant.identity);
         } else if (track.kind === Track.Kind.Video) {
           addVideoTrack(
             track,
             participant.name || participant.identity,
-            track.source === Track.Source.ScreenShare,
+            (publication?.source ?? track.source) === Track.Source.ScreenShare,
             false,
             participant.identity,
           );
         }
       });
 
-      room.on(RoomEvent.TrackUnsubscribed, (track) => removeTrack(track));
+      room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+        const wasScreenAudio = track.kind === Track.Kind.Audio && isScreenAudioSource(publication?.source ?? track.source);
+        removeTrack(track);
+        if (wasScreenAudio && participant?.identity) {
+          setTimeout(() => updateScreenAudioControls(participant.identity), 0);
+        }
+      });
       if (RoomEvent.LocalTrackUnpublished) {
         room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
           if (room !== lkRoom) return;
@@ -1326,6 +1370,8 @@
         document.querySelectorAll(`[data-participant="${CSS.escape(participant.identity)}"]`).forEach(el => el.remove());
         participantVolumes.delete(participant.identity);
         participantMuted.delete(participant.identity);
+        screenAudioVolumes.delete(participant.identity);
+        screenAudioMuted.delete(participant.identity);
         if (volumePopoverIdentity === participant.identity) closeVolumePopover();
         updateEmptyVideo();
       });
@@ -1441,6 +1487,84 @@
     }
   }
 
+  function syncVideoAspect(tile, video, track) {
+    if (!tile || !video) return;
+    const apply = () => {
+      const settings = track?.mediaStreamTrack?.getSettings?.() || {};
+      const width = Number(video.videoWidth || settings.width || 0);
+      const height = Number(video.videoHeight || settings.height || 0);
+      if (width > 0 && height > 0) {
+        tile.style.setProperty('--media-aspect', `${width} / ${height}`);
+      }
+    };
+    apply();
+    video.addEventListener('loadedmetadata', apply, { once: true });
+    video.addEventListener('resize', apply);
+  }
+
+  function hasRemoteScreenAudio(identity) {
+    if (!identity) return false;
+    return Boolean(audioBin.querySelector(`audio[data-participant="${CSS.escape(identity)}"][data-audio-source="screen"]`));
+  }
+
+  function updateScreenAudioControls(identity) {
+    if (!identity) return;
+    document.querySelectorAll('.video-tile.screen[data-participant]').forEach(tile => {
+      if (tile.dataset.participant !== identity) return;
+      const control = tile.querySelector('.screen-audio-control');
+      if (!control) return;
+      const hasAudio = hasRemoteScreenAudio(identity);
+      const muted = !roomSoundEnabled || isScreenAudioMuted(identity);
+      const volume = getScreenAudioVolume(identity);
+      const button = control.querySelector('[data-screen-audio-mute]');
+      const range = control.querySelector('[data-screen-audio-range]');
+      const value = control.querySelector('[data-screen-audio-value]');
+      control.classList.toggle('no-audio', !hasAudio);
+      if (button) {
+        button.disabled = !hasAudio;
+        button.textContent = hasAudio ? (muted ? '🔇' : '🔊') : '🔇';
+        button.title = hasAudio ? (muted ? 'Ativar som da live' : 'Silenciar som da live') : 'Esta live não está transmitindo áudio';
+      }
+      if (range) {
+        range.disabled = !hasAudio;
+        range.value = String(Math.round(volume * 100));
+      }
+      if (value) value.textContent = hasAudio ? `${Math.round(volume * 100)}%` : 'Sem áudio';
+    });
+  }
+
+  function addScreenAudioControls(tile, identity, local) {
+    if (!tile || !identity || local || tile.querySelector('.screen-audio-control')) return;
+    const control = document.createElement('div');
+    control.className = 'screen-audio-control no-audio';
+    control.innerHTML = `
+      <button type="button" data-screen-audio-mute title="Som da live" aria-label="Som da live">🔇</button>
+      <input type="range" min="0" max="100" step="1" value="100" data-screen-audio-range aria-label="Volume da live" />
+      <span data-screen-audio-value>Sem áudio</span>
+    `;
+    control.addEventListener('click', event => event.stopPropagation());
+    control.addEventListener('dblclick', event => event.stopPropagation());
+    control.addEventListener('pointerdown', event => event.stopPropagation());
+
+    const mute = control.querySelector('[data-screen-audio-mute]');
+    const range = control.querySelector('[data-screen-audio-range]');
+    mute.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!hasRemoteScreenAudio(identity)) return;
+      screenAudioMuted.set(identity, !isScreenAudioMuted(identity));
+      applyScreenAudioState(identity);
+    });
+    range.addEventListener('input', event => {
+      event.stopPropagation();
+      const value = Number(range.value) / 100;
+      screenAudioVolumes.set(identity, Math.max(0, Math.min(1, value)));
+      if (value > 0 && isScreenAudioMuted(identity)) screenAudioMuted.set(identity, false);
+      applyScreenAudioState(identity);
+    });
+    tile.appendChild(control);
+    updateScreenAudioControls(identity);
+  }
+
   function prepareVideoTile(tile) {
     if (!tile || tile.dataset.interactive === 'true') return;
     tile.dataset.interactive = 'true';
@@ -1495,12 +1619,15 @@
     video.playsInline = true;
     if (local && !isScreen) video.muted = true;
     tile.appendChild(video);
+    syncVideoAspect(tile, video, track);
     const badge = document.createElement('div');
     badge.className = 'video-label';
     badge.textContent = `${label}${local ? ' (você)' : ''}${isScreen ? ' • tela' : ''}`;
     tile.appendChild(badge);
     prepareVideoTile(tile);
+    if (isScreen) addScreenAudioControls(tile, participantIdentity, local);
     videoGrid.appendChild(tile);
+    if (isScreen && participantIdentity) setTimeout(() => updateScreenAudioControls(participantIdentity), 0);
     updateEmptyVideo();
     updateVideoLayout();
   }
@@ -1535,6 +1662,7 @@
       const video = track.attach();
       video.autoplay = true; video.playsInline = true; video.muted = true;
       tile.appendChild(video);
+      syncVideoAspect(tile, video, track);
       const badge = document.createElement('div'); badge.className = 'video-label'; badge.textContent = `${profileName} (você)${isScreen ? ' • tela' : ''}`; tile.appendChild(badge);
       prepareVideoTile(tile);
       videoGrid.appendChild(tile);
@@ -1542,6 +1670,7 @@
       if (isScreen && track.mediaStreamTrack) {
         const mediaTrack = track.mediaStreamTrack;
         mediaTrack.addEventListener('ended', () => {
+          if (!stoppingScreenShare) stopScreenShareTracks().catch(() => {});
           screenEnabled = false;
           updateControlButtons();
           tile.remove();
@@ -1655,33 +1784,109 @@
     }
   });
 
+  async function publishScreenShareWithAudio() {
+    if (!lkRoom) return { hasAudio: false, fallback: false };
+    const participant = lkRoom.localParticipant;
+    const { Track } = LivekitClient;
+
+    if (typeof participant.createScreenTracks !== 'function') {
+      await participant.setScreenShareEnabled(
+        true,
+        {
+          resolution: { width: 1920, height: 1080, frameRate: 60 },
+          contentHint: 'motion',
+        },
+        {
+          videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+          degradationPreference: 'maintain-framerate',
+        },
+      );
+      return { hasAudio: false, fallback: true };
+    }
+
+    const tracks = await participant.createScreenTracks({
+      audio: true,
+      resolution: { width: 1920, height: 1080, frameRate: 60 },
+      contentHint: 'motion',
+    });
+    const videoTrack = tracks.find(track => track.kind === Track.Kind.Video || track.kind === 'video');
+    const audioTrack = tracks.find(track => track.kind === Track.Kind.Audio || track.kind === 'audio');
+    if (!videoTrack) {
+      tracks.forEach(track => { try { track.stop?.(); } catch {} });
+      throw new Error('O navegador não retornou a imagem da tela.');
+    }
+
+    await participant.publishTrack(videoTrack, {
+      source: Track.Source.ScreenShare,
+      videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+      degradationPreference: 'maintain-framerate',
+    });
+
+    let hasAudio = false;
+    if (audioTrack) {
+      try {
+        await participant.publishTrack(audioTrack, {
+          source: Track.Source.ScreenShareAudio || 'screen_share_audio',
+        });
+        hasAudio = true;
+      } catch (error) {
+        console.warn('Não foi possível publicar o áudio da live.', error);
+        try { audioTrack.stop?.(); } catch {}
+      }
+    }
+    return { hasAudio, fallback: false };
+  }
+
+  async function stopScreenShareTracks() {
+    if (!lkRoom || stoppingScreenShare) return;
+    stoppingScreenShare = true;
+    const participant = lkRoom.localParticipant;
+    const { Track } = LivekitClient;
+    try {
+      try { await participant.setScreenShareEnabled(false); } catch {}
+      const publications = [
+        ...participant.videoTrackPublications.values(),
+        ...participant.audioTrackPublications.values(),
+      ];
+      for (const publication of publications) {
+        if (publication.source !== Track.Source.ScreenShare && !isScreenAudioSource(publication.source)) continue;
+        const track = publication.track;
+        if (!track) continue;
+        try { await participant.unpublishTrack(track); } catch {}
+        try { track.stop?.(); } catch {}
+      }
+    } finally {
+      screenEnabled = false;
+      stoppingScreenShare = false;
+      updateControlButtons();
+      setTimeout(refreshLocalVideo, 0);
+    }
+  }
+
   screenBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
     if (!canUseVoicePermission('screen_share')) return notify('Seu cargo não permite compartilhar a tela nesta sala.', true);
     try {
-      screenEnabled = !screenEnabled;
-      if (screenEnabled) {
+      if (!screenEnabled) {
         callCollapsed = false;
-        await lkRoom.localParticipant.setScreenShareEnabled(
-          true,
-          {
-            resolution: { width: 1920, height: 1080, frameRate: 60 },
-            contentHint: 'motion',
-          },
-          {
-            videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
-            degradationPreference: 'maintain-framerate',
-          },
-        );
+        const result = await publishScreenShareWithAudio();
+        screenEnabled = true;
+        setTimeout(refreshLocalVideo, 100);
+        updateControlButtons();
+        if (result.hasAudio) {
+          notify('Live iniciada com som.');
+        } else {
+          notify('Live iniciada sem som. Para transmitir áudio, marque “Compartilhar áudio” no seletor do navegador.', true);
+        }
       } else {
-        await lkRoom.localParticipant.setScreenShareEnabled(false);
+        await stopScreenShareTracks();
+        notify('Compartilhamento de tela encerrado.');
       }
-      setTimeout(refreshLocalVideo, 100);
-      updateControlButtons();
     } catch (error) {
+      console.error(error);
       screenEnabled = false;
       updateControlButtons();
-      notify('O compartilhamento de tela foi cancelado ou bloqueado.', true);
+      notify(error.message || 'O compartilhamento de tela foi cancelado ou bloqueado.', true);
     }
   });
 
@@ -1760,6 +1965,8 @@
     document.querySelectorAll('.speaking').forEach(el => el.classList.remove('speaking'));
     participantVolumes.clear();
     participantMuted.clear();
+    screenAudioVolumes.clear();
+    screenAudioMuted.clear();
     closeVolumePopover();
     audioBin.innerHTML = '';
     updateControlButtons();
