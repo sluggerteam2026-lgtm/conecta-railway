@@ -232,3 +232,66 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 .message-editor-actions button:hover{filter:brightness(1.08)}
 .message-editor-actions button:disabled{opacity:.55;cursor:default}
 @media(max-width:760px){.message-content{padding-right:66px}.message-actions{opacity:.7;right:8px}.message-actions button{width:27px;height:27px}}
+
+
+/* Etapa 6: criar, renomear e excluir canais */
+.channel-section h3{align-items:center}
+.channel-section-title{flex:1}
+.channel-add-btn{
+  margin-left:auto;
+  width:22px;
+  height:22px;
+  display:grid;
+  place-items:center;
+  border-radius:4px;
+  background:transparent;
+  color:#949ba4;
+  cursor:pointer;
+  font-size:17px;
+  line-height:1;
+  padding:0;
+}
+.channel-add-btn:hover{background:#35373c;color:#fff}
+.channel-list{display:flex;flex-direction:column;gap:1px}
+.channel-tail{display:flex;align-items:center;gap:4px;min-width:0}
+.channel-more{
+  width:20px;
+  height:22px;
+  display:grid;
+  place-items:center;
+  border-radius:4px;
+  color:#949ba4;
+  opacity:0;
+  cursor:pointer;
+  font-size:16px;
+  line-height:1;
+}
+.channel:hover .channel-more,.channel:focus-within .channel-more{opacity:1}
+.channel-more:hover{background:#1e1f22;color:#fff}
+.channel-menu-popover{
+  position:fixed;
+  z-index:1500;
+  width:170px;
+  padding:6px;
+  border-radius:7px;
+  background:#111214;
+  border:1px solid #2f3136;
+  box-shadow:0 12px 32px rgba(0,0,0,.48);
+}
+.channel-menu-popover button{
+  width:100%;
+  height:34px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:0 10px;
+  border-radius:4px;
+  background:transparent;
+  color:#dbdee1;
+  cursor:pointer;
+  text-align:left;
+  font-size:12px;
+}
+.channel-menu-popover button:hover{background:#5865f2;color:#fff}
+.channel-menu-popover button.danger{color:#ffb8ba}
+.channel-menu-popover button.danger:hover{background:#da373c;color:#fff}
