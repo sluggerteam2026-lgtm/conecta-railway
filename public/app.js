@@ -4,7 +4,6 @@
   const loginForm = document.querySelector('#loginForm');
   const loginBtn = document.querySelector('#loginBtn');
   const nameInput = document.querySelector('#nameInput');
-  const codeInput = document.querySelector('#codeInput');
   const toast = document.querySelector('#toast');
   const messages = document.querySelector('#messages');
   const messageForm = document.querySelector('#messageForm');
@@ -45,7 +44,6 @@
   };
 
   const SAVED_NAME_KEY = 'conecta.savedName';
-  const SAVED_CODE_KEY = 'conecta.savedCode';
 
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
@@ -121,12 +119,12 @@
     return data;
   }
 
-  async function login(name, code, { remember = true, silent = false } = {}) {
+  async function login(name, { remember = true, silent = false } = {}) {
     loginBtn.disabled = true;
     try {
       const data = await api('/api/login', {
         method: 'POST',
-        body: JSON.stringify({ name, code }),
+        body: JSON.stringify({ name }),
       });
       sessionId = data.sessionId;
       profileName = data.name;
@@ -136,7 +134,6 @@
       sessionStorage.setItem('conecta.name', profileName);
       if (remember) {
         localStorage.setItem(SAVED_NAME_KEY, profileName);
-        localStorage.setItem(SAVED_CODE_KEY, String(code || '').trim());
       }
       enterApp();
       return true;
@@ -150,7 +147,7 @@
 
   loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    await login(nameInput.value, codeInput.value);
+    await login(nameInput.value);
   });
 
   function enterApp() {
@@ -178,21 +175,19 @@
       const message = error.message || 'Não foi possível entrar na turma.';
       if (/sessão/i.test(message)) {
         const savedName = localStorage.getItem(SAVED_NAME_KEY) || '';
-        const savedCode = localStorage.getItem(SAVED_CODE_KEY) || '';
-        if (!reauthenticating && savedName && savedCode) {
+        if (!reauthenticating && savedName) {
           reauthenticating = true;
           socket?.disconnect();
           sessionStorage.removeItem('conecta.sessionId');
           sessionStorage.removeItem('conecta.name');
           sessionId = '';
           profileName = '';
-          const ok = await login(savedName, savedCode, { remember: true, silent: true });
+          const ok = await login(savedName, { remember: true, silent: true });
           reauthenticating = false;
           if (!ok) {
             landing.classList.remove('hidden');
             app.classList.add('hidden');
             nameInput.value = savedName;
-            codeInput.value = savedCode;
             notify('Seu login salvo não pôde ser validado. Entre novamente.', true);
           }
           return;
@@ -613,7 +608,6 @@
     sessionStorage.removeItem('conecta.sessionId');
     sessionStorage.removeItem('conecta.name');
     localStorage.removeItem(SAVED_NAME_KEY);
-    localStorage.removeItem(SAVED_CODE_KEY);
     location.reload();
   }
 
@@ -622,14 +616,12 @@
   });
 
   const savedName = localStorage.getItem(SAVED_NAME_KEY) || '';
-  const savedCode = localStorage.getItem(SAVED_CODE_KEY) || '';
   if (savedName) nameInput.value = savedName;
-  if (savedCode) codeInput.value = savedCode;
 
   if (sessionId && profileName) {
     enterApp();
-  } else if (savedName && savedCode) {
-    login(savedName, savedCode, { remember: true, silent: true }).then((ok) => {
+  } else if (savedName) {
+    login(savedName, { remember: true, silent: true }).then((ok) => {
       if (!ok) notify('Não foi possível entrar automaticamente. Confira seu login.', true);
     });
   }
