@@ -33,6 +33,11 @@
   const videoGrid = document.querySelector('#videoGrid');
   const emptyVideo = document.querySelector('#emptyVideo');
   const audioBin = document.querySelector('#audioBin');
+  const channelScroll = document.querySelector('.channel-scroll');
+  const textChannelsList = document.querySelector('#textChannelsList');
+  const voiceChannelsList = document.querySelector('#voiceChannelsList');
+  const createTextChannelBtn = document.querySelector('#createTextChannelBtn');
+  const createVoiceChannelBtn = document.querySelector('#createVoiceChannelBtn');
 
   const channelNames = {
     geral: ['geral', 'O papo principal da turma'],
@@ -71,6 +76,10 @@
   let volumePopover = null;
   let volumePopoverIdentity = '';
   let historyLoadToken = 0;
+  let channelCatalog = [];
+  let lastPresence = { users: [], total: 0, max: 20 };
+  let channelMenuPopover = null;
+  let channelMenuTarget = null;
 
 
   function notify(text, isError = false) {
@@ -100,6 +109,247 @@
     }
     localStorage.setItem(SAVED_USER_KEY, userKey);
     return userKey;
+  }
+
+  function channelInfo(slug) {
+    return channelNames[slug] || [slug || 'canal', ''];
+  }
+
+  function voiceRoomName(slug) {
+    return voiceNames[slug] || slug || 'Sala de voz';
+  }
+
+  function applyChannelCatalog(channels, { loadIfChanged = true } = {}) {
+    channelCatalog = Array.isArray(channels) ? channels : [];
+
+    for (const key of Object.keys(channelNames)) delete channelNames[key];
+    for (const key of Object.keys(voiceNames)) delete voiceNames[key];
+
+    const text = channelCatalog.filter(item => item.type === 'text');
+    const voice = channelCatalog.filter(item => item.type === 'voice');
+
+    for (const item of text) {
+      channelNames[item.slug] = [item.name, item.subtitle || `Conversa em #${item.name}`];
+    }
+    for (const item of voice) {
+      voiceNames[item.slug] = item.name;
+    }
+
+    const previousChannel = currentChannel;
+    if (!channelNames[currentChannel]) currentChannel = text[0]?.slug || '';
+
+    renderChannels();
+    renderPresence(lastPresence);
+
+    if (currentVoiceRoom && voiceNames[currentVoiceRoom]) {
+      voiceRoomLabel.textContent = voiceRoomName(currentVoiceRoom);
+      callStageTitle.textContent = voiceRoomName(currentVoiceRoom);
+    }
+
+    if (currentChannel) {
+      const [name, subtitle] = channelInfo(currentChannel);
+      document.querySelector('#channelTitle').textContent = name;
+      document.querySelector('#channelSubtitle').textContent = subtitle;
+      messageInput.placeholder = `Conversar em #${name}`;
+    }
+
+    if (loadIfChanged && previousChannel !== currentChannel && currentChannel) {
+      socket?.emit('join-text-channel', currentChannel);
+      loadChannelHistory(currentChannel);
+    }
+
+    setTimeout(() => {
+      document.querySelectorAll('.voice-channel').forEach(button => {
+        prefetchVoiceToken(button.dataset.room);
+      });
+    }, 30);
+  }
+
+  function renderChannels() {
+    const text = channelCatalog.filter(item => item.type === 'text');
+    const voice = channelCatalog.filter(item => item.type === 'voice');
+
+    textChannelsList.innerHTML = text.map(item => `
+      <button class="channel text-channel${item.slug === currentChannel ? ' active' : ''}" data-channel="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button">
+        <span class="channel-icon">#</span>
+        <span>${escapeHtml(item.name)}</span>
+        <span class="channel-tail"><span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span></span>
+      </button>
+    `).join('');
+
+    voiceChannelsList.innerHTML = voice.map(item => `
+      <button class="channel voice-channel${item.slug === currentVoiceRoom ? ' connected' : ''}" data-room="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button">
+        <span class="channel-icon">🔊</span>
+        <span>${escapeHtml(item.name)}</span>
+        <span class="channel-tail">
+          <b class="voice-count" data-count="${escapeHtml(item.slug)}">0</b>
+          <span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>
+        </span>
+      </button>
+      <div class="voice-members hidden"></div>
+    `).join('');
+  }
+
+  function renderPresence(payload = lastPresence) {
+    const users = payload?.users || [];
+    const total = Number(payload?.total || 0);
+    const max = Number(payload?.max || 20);
+    lastPresence = { users, total, max };
+
+    onlineCount.textContent = `${total} online`;
+    membersCount.textContent = `${total} / ${max}`;
+    membersList.innerHTML = users.map(user => `
+      <div class="member"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
+        <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
+        <div class="member-info"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong><span>${user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'}</span></div>
+      </div>
+    `).join('');
+
+    document.querySelectorAll('.voice-channel').forEach(button => {
+      const room = button.dataset.room;
+      const people = users.filter(user => user.voiceRoom === room);
+      const count = button.querySelector('[data-count]');
+      if (count) count.textContent = people.length;
+
+      let list = button.nextElementSibling;
+      if (!list || !list.classList.contains('voice-members')) {
+        list = document.createElement('div');
+        list.className = 'voice-members';
+        button.insertAdjacentElement('afterend', list);
+      }
+
+      list.innerHTML = people.map(user => `
+        <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}>
+          <span class="voice-member-dot"></span>
+          <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
+          <span class="voice-member-states">
+            <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone desmutado' : 'Microfone mutado'}">${user.micEnabled ? '🎙' : '🔇'}</span>
+            <span class="voice-state-icon${user.soundEnabled ? '' : ' off'}" title="${user.soundEnabled ? 'Som da sala ligado' : 'Som da sala desligado'}">${user.soundEnabled ? '🔊' : '🔈'}</span>
+          </span>
+        </div>
+      `).join('');
+      list.classList.toggle('hidden', people.length === 0);
+    });
+  }
+
+  async function loadChannels({ loadHistory = false } = {}) {
+    try {
+      const data = await api('/api/channels');
+      applyChannelCatalog(data.channels, { loadIfChanged: !loadHistory });
+      if (loadHistory && currentChannel) loadChannelHistory(currentChannel);
+      return true;
+    } catch (error) {
+      notify(error.message || 'Não foi possível carregar os canais.', true);
+      return false;
+    }
+  }
+
+  async function createChannel(type) {
+    const label = type === 'text' ? 'canal de texto' : 'sala de voz';
+    const name = window.prompt(`Nome do novo ${label}:`);
+    if (!name?.trim()) return;
+
+    try {
+      const data = await api('/api/channels', {
+        method: 'POST',
+        body: JSON.stringify({ type, name }),
+      });
+      applyChannelCatalog(data.channels);
+      notify(type === 'text' ? 'Canal de texto criado.' : 'Sala de voz criada.');
+    } catch (error) {
+      notify(error.message || 'Não foi possível criar o canal.', true);
+    }
+  }
+
+  async function renameChannel(channel) {
+    if (!channel) return;
+    const name = window.prompt('Novo nome:', channel.name);
+    if (!name?.trim() || name.trim() === channel.name) return;
+
+    try {
+      const data = await api(`/api/channels/${encodeURIComponent(channel.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      });
+      applyChannelCatalog(data.channels, { loadIfChanged: false });
+      notify('Canal renomeado.');
+    } catch (error) {
+      notify(error.message || 'Não foi possível renomear o canal.', true);
+    }
+  }
+
+  async function deleteChannel(channel) {
+    if (!channel) return;
+    const kind = channel.type === 'text' ? 'canal de texto' : 'sala de voz';
+    const extra = channel.type === 'text'
+      ? '\nAs mensagens salvas deste canal também serão excluídas.'
+      : '\nQuem estiver nesta sala será desconectado.';
+    if (!window.confirm(`Excluir ${kind} "${channel.name}"?${extra}`)) return;
+
+    try {
+      const data = await api(`/api/channels/${encodeURIComponent(channel.id)}`, {
+        method: 'DELETE',
+      });
+      applyChannelCatalog(data.channels);
+      closeChannelMenu();
+      notify('Canal excluído.');
+    } catch (error) {
+      notify(error.message || 'Não foi possível excluir o canal.', true);
+    }
+  }
+
+  function ensureChannelMenu() {
+    if (channelMenuPopover) return channelMenuPopover;
+    channelMenuPopover = document.createElement('div');
+    channelMenuPopover.className = 'channel-menu-popover hidden';
+    channelMenuPopover.innerHTML = `
+      <button type="button" data-channel-rename>✎ Renomear</button>
+      <button type="button" class="danger" data-channel-delete>🗑 Excluir</button>
+    `;
+    document.body.appendChild(channelMenuPopover);
+
+    channelMenuPopover.addEventListener('click', (event) => {
+      if (event.target.closest('[data-channel-rename]')) renameChannel(channelMenuTarget);
+      if (event.target.closest('[data-channel-delete]')) deleteChannel(channelMenuTarget);
+    });
+    return channelMenuPopover;
+  }
+
+  function openChannelMenu(channelId, anchor) {
+    const channel = channelCatalog.find(item => item.id === channelId);
+    if (!channel || !anchor) return;
+    channelMenuTarget = channel;
+    const menu = ensureChannelMenu();
+    menu.classList.remove('hidden');
+
+    const rect = anchor.getBoundingClientRect();
+    const width = 170;
+    const gap = 6;
+    let left = rect.right - width;
+    if (left < gap) left = gap;
+    let top = rect.bottom + gap;
+    if (top + 90 > window.innerHeight) top = Math.max(gap, rect.top - 90);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function closeChannelMenu() {
+    channelMenuTarget = null;
+    channelMenuPopover?.classList.add('hidden');
+  }
+
+  function switchTextChannel(channel) {
+    if (!channel || channel === currentChannel) return;
+    currentChannel = channel;
+    document.querySelectorAll('.text-channel').forEach(el => {
+      el.classList.toggle('active', el.dataset.channel === channel);
+    });
+    socket?.emit('join-text-channel', channel);
+    const [name, subtitle] = channelInfo(channel);
+    document.querySelector('#channelTitle').textContent = name;
+    document.querySelector('#channelSubtitle').textContent = subtitle;
+    messageInput.placeholder = `Conversar em #${name}`;
+    loadChannelHistory(channel);
   }
 
   function getParticipantVolume(identity) {
@@ -284,7 +534,7 @@
     selfName.textContent = profileName;
     selfAvatar.textContent = initials(profileName);
     connectSocket();
-    loadChannelHistory(currentChannel);
+    loadChannels({ loadHistory: true });
   }
 
   function connectSocket() {
@@ -304,7 +554,7 @@
       socketRecovering = false;
 
       // Ao reconectar, o servidor cria o socket de novo. Restauramos o canal e a presença de voz.
-      if (currentChannel !== 'geral') socket.emit('join-text-channel', currentChannel);
+      if (currentChannel) socket.emit('join-text-channel', currentChannel);
       if (currentVoiceRoom) emitVoiceState();
       if (recovered) {
         loadChannelHistory(currentChannel);
@@ -361,41 +611,18 @@
       notify(message, true);
     });
 
-    socket.on('presence', ({ users, total, max }) => {
-      onlineCount.textContent = `${total} online`;
-      membersCount.textContent = `${total} / ${max}`;
-      membersList.innerHTML = users.map(user => `
-        <div class="member"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
-          <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
-          <div class="member-info"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong><span>${user.voiceRoom ? `em ${escapeHtml(voiceNames[user.voiceRoom] || 'voz')}` : 'online'}</span></div>
-        </div>
-      `).join('');
+    socket.on('presence', (payload) => {
+      renderPresence(payload);
+    });
 
-      document.querySelectorAll('.voice-channel').forEach(button => {
-        const room = button.dataset.room;
-        const people = users.filter(user => user.voiceRoom === room);
-        const count = button.querySelector('[data-count]');
-        if (count) count.textContent = people.length;
+    socket.on('channels-updated', ({ channels } = {}) => {
+      if (Array.isArray(channels)) applyChannelCatalog(channels);
+    });
 
-        let list = button.nextElementSibling;
-        if (!list || !list.classList.contains('voice-members')) {
-          list = document.createElement('div');
-          list.className = 'voice-members';
-          button.insertAdjacentElement('afterend', list);
-        }
-
-        list.innerHTML = people.map(user => `
-          <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}>
-            <span class="voice-member-dot"></span>
-            <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
-            <span class="voice-member-states">
-              <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone desmutado' : 'Microfone mutado'}">${user.micEnabled ? '🎙' : '🔇'}</span>
-              <span class="voice-state-icon${user.soundEnabled ? '' : ' off'}" title="${user.soundEnabled ? 'Som da sala ligado' : 'Som da sala desligado'}">${user.soundEnabled ? '🔊' : '🔈'}</span>
-            </span>
-          </div>
-        `).join('');
-        list.classList.toggle('hidden', people.length === 0);
-      });
+    socket.on('voice-room-deleted', ({ room, name } = {}) => {
+      if (currentVoiceRoom !== room) return;
+      leaveVoice(false);
+      notify(`A sala "${name || 'de voz'}" foi excluída.`);
     });
 
     socket.on('chat-message', (msg) => {
@@ -423,7 +650,7 @@
     messages.innerHTML = `
       <div class="welcome-message">
         <div class="hash-bubble">#</div>
-        <h2>Bem-vindo ao <span>#${escapeHtml(channelNames[currentChannel][0])}</span></h2>
+        <h2>Bem-vindo ao <span>#${escapeHtml(channelInfo(currentChannel)[0])}</span></h2>
         <p>As mensagens deste canal ficam salvas e podem ser editadas ou excluídas por quem enviou.</p>
       </div>`;
   }
@@ -447,18 +674,43 @@
     }
   }
 
-  document.querySelectorAll('.text-channel').forEach(button => {
-    button.addEventListener('click', () => {
-      const channel = button.dataset.channel;
-      if (channel === currentChannel) return;
-      currentChannel = channel;
-      document.querySelectorAll('.text-channel').forEach(el => el.classList.toggle('active', el === button));
-      socket?.emit('join-text-channel', channel);
-      document.querySelector('#channelTitle').textContent = channelNames[channel][0];
-      document.querySelector('#channelSubtitle').textContent = channelNames[channel][1];
-      messageInput.placeholder = `Conversar em #${channelNames[channel][0]}`;
-      loadChannelHistory(channel);
-    });
+  createTextChannelBtn?.addEventListener('click', () => createChannel('text'));
+  createVoiceChannelBtn?.addEventListener('click', () => createChannel('voice'));
+
+  channelScroll?.addEventListener('click', (event) => {
+    const menuTarget = event.target.closest('[data-channel-menu]');
+    if (menuTarget) {
+      event.preventDefault();
+      event.stopPropagation();
+      openChannelMenu(menuTarget.dataset.channelMenu, menuTarget);
+      return;
+    }
+
+    const textButton = event.target.closest('.text-channel[data-channel]');
+    if (textButton) {
+      switchTextChannel(textButton.dataset.channel);
+      return;
+    }
+
+    const voiceButton = event.target.closest('.voice-channel[data-room]');
+    if (voiceButton) {
+      joinVoice(voiceButton.dataset.room);
+    }
+  });
+
+  channelScroll?.addEventListener('pointerover', (event) => {
+    const voiceButton = event.target.closest('.voice-channel[data-room]');
+    if (voiceButton) prefetchVoiceToken(voiceButton.dataset.room);
+  }, { passive: true });
+
+  channelScroll?.addEventListener('pointerdown', (event) => {
+    const voiceButton = event.target.closest('.voice-channel[data-room]');
+    if (voiceButton) prefetchVoiceToken(voiceButton.dataset.room);
+  }, { passive: true });
+
+  channelScroll?.addEventListener('focusin', (event) => {
+    const voiceButton = event.target.closest('.voice-channel[data-room]');
+    if (voiceButton) prefetchVoiceToken(voiceButton.dataset.room);
   });
 
   messageForm.addEventListener('submit', (event) => {
@@ -601,13 +853,6 @@
     }
   });
 
-  document.querySelectorAll('.voice-channel').forEach(button => {
-    const warmRoom = () => prefetchVoiceToken(button.dataset.room);
-    button.addEventListener('pointerenter', warmRoom, { passive: true });
-    button.addEventListener('pointerdown', warmRoom, { passive: true });
-    button.addEventListener('focus', warmRoom);
-    button.addEventListener('click', () => joinVoice(button.dataset.room));
-  });
 
   async function requestVoiceToken(roomName) {
     const data = await api('/api/livekit-token', {
@@ -651,8 +896,8 @@
     screenEnabled = false;
     voiceDock.classList.remove('hidden');
     setVoiceConnectionStatus('connected');
-    voiceRoomLabel.textContent = voiceNames[roomName];
-    callStageTitle.textContent = voiceNames[roomName];
+    voiceRoomLabel.textContent = voiceRoomName(roomName);
+    callStageTitle.textContent = voiceRoomName(roomName);
     callStage.classList.add('hidden');
     callCollapsed = false;
     document.querySelectorAll('.voice-channel').forEach(el => {
@@ -1144,13 +1389,18 @@
       return;
     }
     if (volumePopover && !volumePopover.contains(event.target)) closeVolumePopover();
+    if (channelMenuPopover && !channelMenuPopover.contains(event.target) && !event.target.closest('[data-channel-menu]')) closeChannelMenu();
   });
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && volumePopoverIdentity) closeVolumePopover();
+    if (event.key === 'Escape' && channelMenuTarget) closeChannelMenu();
   });
 
-  window.addEventListener('resize', closeVolumePopover);
+  window.addEventListener('resize', () => {
+    closeVolumePopover();
+    closeChannelMenu();
+  });
 
   membersToggle.addEventListener('click', () => membersPanel.classList.toggle('open'));
   logoutBtn.addEventListener('click', signOut);
