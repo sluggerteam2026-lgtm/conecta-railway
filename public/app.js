@@ -28,6 +28,7 @@
   const callStage = document.querySelector('#callStage');
   const callStageTitle = document.querySelector('#callStageTitle');
   const collapseCallBtn = document.querySelector('#collapseCallBtn');
+  const fullscreenCallBtn = document.querySelector('#fullscreenCallBtn');
   const videoGrid = document.querySelector('#videoGrid');
   const emptyVideo = document.querySelector('#emptyVideo');
   const audioBin = document.querySelector('#audioBin');
@@ -420,6 +421,26 @@
     }
   }
 
+  function updateVideoLayout() {
+    const tiles = [...videoGrid.querySelectorAll('.video-tile')];
+    videoGrid.classList.toggle('single-video', tiles.length === 1);
+    videoGrid.classList.toggle('two-videos', tiles.length === 2);
+    videoGrid.classList.toggle('has-screen', tiles.some(tile => tile.classList.contains('screen')));
+  }
+
+  async function toggleCallFullscreen() {
+    try {
+      if (document.fullscreenElement === callStage) {
+        await document.exitFullscreen();
+      } else {
+        await callStage.requestFullscreen();
+      }
+    } catch (error) {
+      console.error(error);
+      notify('Não foi possível abrir a tela cheia.', true);
+    }
+  }
+
   function addVideoTrack(track, label, isScreen, local) {
     const sid = track.sid || track.mediaStreamTrack?.id || Math.random().toString(36).slice(2);
     const id = `track-${sid.replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -439,6 +460,7 @@
     tile.appendChild(badge);
     videoGrid.appendChild(tile);
     updateEmptyVideo();
+    updateVideoLayout();
   }
 
   function removeTrack(track) {
@@ -447,6 +469,7 @@
     const sid = track.sid || track.mediaStreamTrack?.id || '';
     if (sid) document.getElementById(`track-${sid.replace(/[^a-zA-Z0-9_-]/g, '')}`)?.remove();
     updateEmptyVideo();
+    updateVideoLayout();
   }
 
   function clearLocalTiles() {
@@ -472,6 +495,7 @@
       videoGrid.appendChild(tile);
     }
     updateEmptyVideo();
+    updateVideoLayout();
   }
 
   function updateEmptyVideo() {
@@ -593,7 +617,18 @@
     audioBin.innerHTML = '';
     updateControlButtons();
     updateEmptyVideo();
+    updateVideoLayout();
+    if (document.fullscreenElement === callStage) document.exitFullscreen().catch(() => {});
   }
+
+  fullscreenCallBtn?.addEventListener('click', toggleCallFullscreen);
+  document.addEventListener('fullscreenchange', () => {
+    if (!fullscreenCallBtn) return;
+    const active = document.fullscreenElement === callStage;
+    fullscreenCallBtn.textContent = active ? '⛶ Sair da tela cheia' : '⛶ Tela cheia';
+    fullscreenCallBtn.title = active ? 'Sair da tela cheia' : 'Tela cheia';
+    updateVideoLayout();
+  });
 
   collapseCallBtn.addEventListener('click', () => {
     callCollapsed = !callCollapsed;
