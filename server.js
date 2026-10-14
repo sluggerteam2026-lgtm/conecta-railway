@@ -63,7 +63,9 @@ function publicUsers() {
       sessionId,
       socketId,
       name: session.name,
-      voiceRoom: voiceState.get(sessionId) || null,
+      voiceRoom: voiceState.get(sessionId)?.room || null,
+      micEnabled: Boolean(voiceState.get(sessionId)?.micEnabled),
+      soundEnabled: voiceState.get(sessionId)?.soundEnabled !== false,
     });
   }
   return users.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
@@ -207,10 +209,32 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('voice-state', (room) => {
+  socket.on('voice-state', (payload) => {
     const allowed = new Set(['sala-da-turma', 'jogando-juntos', 'cinema-live']);
-    if (room === null || room === '') voiceState.delete(sessionId);
-    else if (allowed.has(room)) voiceState.set(sessionId, room);
+
+    if (payload === null || payload === '') {
+      voiceState.delete(sessionId);
+      emitPresence();
+      return;
+    }
+
+    // Compatibilidade com versões antigas que enviavam apenas o nome da sala.
+    if (typeof payload === 'string') {
+      if (allowed.has(payload)) {
+        voiceState.set(sessionId, { room: payload, micEnabled: true, soundEnabled: true });
+      }
+      emitPresence();
+      return;
+    }
+
+    const room = String(payload?.room || '').trim();
+    if (!allowed.has(room)) return;
+
+    voiceState.set(sessionId, {
+      room,
+      micEnabled: Boolean(payload?.micEnabled),
+      soundEnabled: payload?.soundEnabled !== false,
+    });
     emitPresence();
   });
 
