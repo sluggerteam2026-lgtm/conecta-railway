@@ -44,6 +44,7 @@
   const voiceChannelsList = document.querySelector('#voiceChannelsList');
   const createTextChannelBtn = document.querySelector('#createTextChannelBtn');
   const createVoiceChannelBtn = document.querySelector('#createVoiceChannelBtn');
+  const adminSettingsBtn = document.querySelector('#adminSettingsBtn');
 
   const channelNames = {
     geral: ['geral', 'O papo principal da turma'],
@@ -99,6 +100,28 @@
   let lastPresence = { users: [], total: 0, max: 20 };
   let channelMenuPopover = null;
   let channelMenuTarget = null;
+  let currentUser = {
+    name: profileName,
+    userKey,
+    isMaster: false,
+    isAdmin: false,
+    roles: [],
+    permissions: {
+      send_messages: false, join_voice: false, speak: false, camera: false, screen_share: false,
+      manage_channels: false, manage_roles: false, manage_members: false,
+    },
+  };
+  let adminRoles = [];
+  let adminMembers = [];
+  let adminChannels = [];
+  let adminModal = null;
+  let adminActiveTab = 'roles';
+  let adminSelectedRoleId = '';
+  let adminSelectedMemberKey = '';
+  let userRoleMenu = null;
+  let userRoleMenuUser = null;
+  let userLongPressTimer = null;
+  let suppressNextUserClick = false;
 
 
   function notify(text, isError = false) {
@@ -161,6 +184,83 @@
     return userKey;
   }
 
+  const PERMISSION_LABELS = {
+    send_messages: 'Enviar mensagens',
+    join_voice: 'Entrar em salas de voz',
+    speak: 'Falar no microfone',
+    camera: 'Usar câmera',
+    screen_share: 'Compartilhar tela',
+    manage_channels: 'Gerenciar canais',
+    manage_roles: 'Gerenciar cargos',
+    manage_members: 'Gerenciar membros',
+  };
+
+  function hasPermission(permission) {
+    return Boolean(currentUser?.isMaster || currentUser?.isAdmin || currentUser?.permissions?.[permission]);
+  }
+
+  function canOpenAdmin() {
+    return Boolean(currentUser?.isMaster || currentUser?.isAdmin || hasPermission('manage_roles') || hasPermission('manage_members') || hasPermission('manage_channels'));
+  }
+
+  function currentChannelObject() {
+    return channelCatalog.find(item => item.slug === currentChannel) || null;
+  }
+
+  function applyMe(me) {
+    if (!me) return;
+    currentUser = {
+      ...currentUser,
+      ...me,
+      permissions: { ...currentUser.permissions, ...(me.permissions || {}) },
+      roles: Array.isArray(me.roles) ? me.roles : [],
+    };
+    if (me.name) {
+      profileName = me.name;
+      selfName.textContent = profileName;
+      selfAvatar.textContent = initials(profileName);
+    }
+    updatePermissionUi();
+    renderChannels();
+    renderPresence(lastPresence);
+  }
+
+  function roleChip(role, extraClass = '') {
+    if (!role?.name) return '';
+    return `<span class="role-chip ${extraClass}" style="--role-color:${escapeHtml(role.color || '#5865F2')}">${escapeHtml(role.name)}</span>`;
+  }
+
+  function updatePermissionUi() {
+    const canChannels = hasPermission('manage_channels');
+    createTextChannelBtn?.classList.toggle('hidden', !canChannels);
+    createVoiceChannelBtn?.classList.toggle('hidden', !canChannels);
+    adminSettingsBtn?.classList.toggle('hidden', !canOpenAdmin());
+
+    const channel = currentChannelObject();
+    const canSend = Boolean(channel?.isLobby || hasPermission('send_messages'));
+    if (messageInput) {
+      messageInput.disabled = !canSend;
+      if (!canSend) messageInput.placeholder = 'Seu cargo não permite enviar mensagens neste canal';
+      else if (channel) messageInput.placeholder = `Conversar em #${channel.name}`;
+    }
+
+    if (micBtn) micBtn.disabled = !hasPermission('speak');
+    if (cameraBtn) cameraBtn.disabled = !hasPermission('camera');
+    if (screenBtn) screenBtn.disabled = !hasPermission('screen_share');
+
+  }
+
+  async function refreshMe() {
+    try {
+      const data = await api('/api/me');
+      applyMe(data.me);
+      return data.me;
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
+  }
+
   function channelInfo(slug) {
     return channelNames[slug] || [slug || 'canal', ''];
   }
@@ -208,6 +308,8 @@
       loadChannelHistory(currentChannel);
     }
 
+    updatePermissionUi();
+
     setTimeout(() => {
       document.querySelectorAll('.voice-channel').forEach(button => {
         prefetchVoiceToken(button.dataset.room);
@@ -218,22 +320,24 @@
   function renderChannels() {
     const text = channelCatalog.filter(item => item.type === 'text');
     const voice = channelCatalog.filter(item => item.type === 'voice');
+    const canChannels = hasPermission('manage_channels');
+    const canJoinVoice = hasPermission('join_voice');
 
     textChannelsList.innerHTML = text.map(item => `
       <button class="channel text-channel${item.slug === currentChannel ? ' active' : ''}" data-channel="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button">
         <span class="channel-icon">#</span>
         <span>${escapeHtml(item.name)}</span>
-        <span class="channel-tail"><span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span></span>
+        <span class="channel-tail">${canChannels && !item.isLobby ? `<span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>` : ''}</span>
       </button>
     `).join('');
 
     voiceChannelsList.innerHTML = voice.map(item => `
-      <button class="channel voice-channel${item.slug === currentVoiceRoom ? ' connected' : ''}" data-room="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button">
+      <button class="channel voice-channel${item.slug === currentVoiceRoom ? ' connected' : ''}" data-room="${escapeHtml(item.slug)}" data-channel-id="${escapeHtml(item.id)}" type="button"${canJoinVoice ? '' : ' disabled'}>
         <span class="channel-icon">🔊</span>
         <span>${escapeHtml(item.name)}</span>
         <span class="channel-tail">
           <b class="voice-count" data-count="${escapeHtml(item.slug)}">0</b>
-          <span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>
+          ${canChannels ? `<span class="channel-more" data-channel-menu="${escapeHtml(item.id)}" title="Opções" role="button" tabindex="0">⋮</span>` : ''}
         </span>
       </button>
       <div class="voice-members hidden"></div>
@@ -244,14 +348,17 @@
     const users = payload?.users || [];
     const total = Number(payload?.total || 0);
     const max = Number(payload?.max || 20);
-    lastPresence = { users, total, max };
+    lastPresence = { ...payload, users, total, max };
 
     onlineCount.textContent = `${total} online`;
     membersCount.textContent = `${total} / ${max}`;
     membersList.innerHTML = users.map(user => `
-      <div class="member"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
+      <div class="member${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
         <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
-        <div class="member-info"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong><span>${user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'}</span></div>
+        <div class="member-info">
+          <div class="member-name-row"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong>${user.primaryRole ? roleChip(user.primaryRole, 'compact') : ''}</div>
+          <span>${user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'}</span>
+        </div>
       </div>
     `).join('');
 
@@ -269,9 +376,9 @@
       }
 
       list.innerHTML = people.map(user => `
-        <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}>
+        <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}${user.userKey ? ' manageable-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
           <span class="voice-member-dot"></span>
-          <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
+          <span class="voice-member-name">${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}${user.primaryRole ? roleChip(user.primaryRole, 'micro') : ''}</span>
           <span class="voice-member-states">
             <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone desmutado' : 'Microfone mutado'}">${user.micEnabled ? '🎙' : '🔇'}</span>
             <span class="voice-state-icon${user.soundEnabled ? '' : ' off'}" title="${user.soundEnabled ? 'Som da sala ligado' : 'Som da sala desligado'}">${user.soundEnabled ? '🔊' : '🔈'}</span>
@@ -285,6 +392,7 @@
   async function loadChannels({ loadHistory = false } = {}) {
     try {
       const data = await api('/api/channels');
+      if (data.me) applyMe(data.me);
       applyChannelCatalog(data.channels, { loadIfChanged: !loadHistory });
       if (loadHistory && currentChannel) loadChannelHistory(currentChannel);
       return true;
@@ -403,6 +511,7 @@
     document.querySelector('#channelTitle').textContent = name;
     document.querySelector('#channelSubtitle').textContent = subtitle;
     messageInput.placeholder = `Conversar em #${name}`;
+    updatePermissionUi();
     loadChannelHistory(channel);
     closeMobileChannels();
   }
@@ -677,6 +786,7 @@
       if (remember) {
         localStorage.setItem(SAVED_NAME_KEY, profileName);
       }
+      if (data.me) applyMe(data.me);
       enterApp();
       return true;
     } catch (error) {
@@ -698,6 +808,7 @@
     selfName.textContent = profileName;
     selfAvatar.textContent = initials(profileName);
     connectSocket();
+    refreshMe();
     loadChannels({ loadHistory: true });
   }
 
@@ -781,6 +892,18 @@
 
     socket.on('channels-updated', ({ channels } = {}) => {
       if (Array.isArray(channels)) applyChannelCatalog(channels);
+    });
+
+    socket.on('permissions-updated', ({ me, channels } = {}) => {
+      if (me) applyMe(me);
+      if (Array.isArray(channels)) applyChannelCatalog(channels);
+      renderPresence(lastPresence);
+    });
+
+    socket.on('voice-access-revoked', ({ room } = {}) => {
+      if (currentVoiceRoom !== room) return;
+      leaveVoice(false);
+      notify('Seu acesso a esta sala de voz foi removido.', true);
     });
 
     socket.on('voice-room-deleted', ({ room, name } = {}) => {
@@ -881,6 +1004,8 @@
   messageForm.addEventListener('submit', (event) => {
     event.preventDefault();
     const text = messageInput.value.trim();
+    const channel = currentChannelObject();
+    if (!channel?.isLobby && !hasPermission('send_messages')) return notify('Seu cargo não permite enviar mensagens aqui.', true);
     if (!text || !socket?.connected) return;
     socket.emit('chat-message', { channel: currentChannel, text });
     messageInput.value = '';
@@ -1030,7 +1155,7 @@
   }
 
   function prefetchVoiceToken(roomName) {
-    if (!roomName || !sessionId) return;
+    if (!roomName || !sessionId || !hasPermission('join_voice')) return;
     const cached = voiceTokenCache.get(roomName);
     if (cached && cached.expiresAt > Date.now()) return;
     if (voiceTokenRequests.has(roomName)) return;
@@ -1096,6 +1221,10 @@
   }
 
   async function joinVoice(roomName) {
+    if (!hasPermission('join_voice')) {
+      notify('Seu cargo não permite entrar em salas de voz.', true);
+      return;
+    }
     if (currentVoiceRoom === roomName && lkRoom) {
       callCollapsed = false;
       syncCallStageVisibility();
@@ -1193,13 +1322,17 @@
       setVoiceConnectionStatus('connected');
       updateSpeakingIndicators(room.activeSpeakers || []);
 
-      try {
-        await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
-        micEnabled = true;
-        startKrispInBackground({ notifyOnFallback: true });
-      } catch {
+      if (hasPermission('speak')) {
+        try {
+          await lkRoom.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions());
+          micEnabled = true;
+          startKrispInBackground({ notifyOnFallback: true });
+        } catch {
+          micEnabled = false;
+          notify('Entre na sala de voz. Se quiser falar, permita o microfone no navegador.', true);
+        }
+      } else {
         micEnabled = false;
-        notify('Entre na sala de voz. Se quiser falar, permita o microfone no navegador.', true);
       }
       updateControlButtons();
       emitVoiceState();
@@ -1395,6 +1528,7 @@
 
   micBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
+    if (!hasPermission('speak')) return notify('Seu cargo não permite usar o microfone.', true);
     try {
       micEnabled = !micEnabled;
       await lkRoom.localParticipant.setMicrophoneEnabled(
@@ -1456,6 +1590,7 @@
 
   cameraBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
+    if (!hasPermission('camera')) return notify('Seu cargo não permite usar câmera.', true);
     try {
       cameraEnabled = !cameraEnabled;
 
@@ -1486,6 +1621,7 @@
 
   screenBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
+    if (!hasPermission('screen_share')) return notify('Seu cargo não permite compartilhar a tela.', true);
     try {
       screenEnabled = !screenEnabled;
       if (screenEnabled) {
@@ -1553,6 +1689,9 @@
       noiseBtn.setAttribute('aria-label', noiseBtn.title);
     }
 
+    micBtn.disabled = !hasPermission('speak');
+    cameraBtn.disabled = !hasPermission('camera');
+    screenBtn.disabled = !hasPermission('screen_share');
     cameraBtn.classList.toggle('active', cameraEnabled); cameraBtn.textContent = cameraEnabled ? '◉' : '◎';
     screenBtn.classList.toggle('active', screenEnabled);
   }
@@ -1593,6 +1732,333 @@
     if (document.fullscreenElement === callStage) document.exitFullscreen().catch(() => {});
   }
 
+
+  function closeUserRoleMenu() {
+    userRoleMenuUser = null;
+    userRoleMenu?.classList.add('hidden');
+  }
+
+  async function ensureAdminRolesLoaded(force = false) {
+    if (adminRoles.length && !force) return adminRoles;
+    const data = await api('/api/admin/roles');
+    adminRoles = Array.isArray(data.roles) ? data.roles : [];
+    return adminRoles;
+  }
+
+  function findPresenceUserByKey(userKey) {
+    return (lastPresence?.users || []).find(user => user.userKey === userKey) || null;
+  }
+
+  async function setMemberRoles(userKey, roleIds) {
+    await api(`/api/admin/members/${encodeURIComponent(userKey)}/roles`, {
+      method: 'PUT',
+      body: JSON.stringify({ roleIds }),
+    });
+  }
+
+  async function openUserRoleMenu(user, clientX, clientY) {
+    if (!user?.userKey || !hasPermission('manage_members')) return;
+    try {
+      await ensureAdminRolesLoaded();
+      if (!userRoleMenu) {
+        userRoleMenu = document.createElement('div');
+        userRoleMenu.className = 'user-role-menu hidden';
+        document.body.appendChild(userRoleMenu);
+      }
+      userRoleMenuUser = user;
+      const selected = new Set(user.roleIds || []);
+      userRoleMenu.innerHTML = `
+        <div class="user-role-menu-head">
+          <strong>${escapeHtml(user.name)}</strong>
+          <small>${user.isMaster ? 'ADM Master • protegido' : 'Marque ou desmarque cargos'}</small>
+        </div>
+        <div class="user-role-menu-list">
+          ${adminRoles.map(role => `
+            <label class="role-menu-option">
+              <input type="checkbox" value="${escapeHtml(role.id)}" ${selected.has(role.id) ? 'checked' : ''} />
+              <span class="role-color-dot" style="--role-color:${escapeHtml(role.color)}"></span>
+              <span>${escapeHtml(role.name)}</span>
+              ${role.systemKey === 'admin' ? '<small>controle total</small>' : ''}
+            </label>
+          `).join('') || '<div class="admin-empty">Nenhum cargo criado.</div>'}
+        </div>
+        <button type="button" class="role-menu-manage">⚙ Abrir gerenciamento</button>
+      `;
+
+      userRoleMenu.querySelectorAll('input[type="checkbox"]').forEach(input => {
+        input.addEventListener('change', async () => {
+          const roleIds = [...userRoleMenu.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value);
+          input.disabled = true;
+          try {
+            await setMemberRoles(user.userKey, roleIds);
+            user.roleIds = roleIds;
+            notify('Cargos atualizados.');
+          } catch (error) {
+            input.checked = !input.checked;
+            notify(error.message || 'Não foi possível alterar os cargos.', true);
+          } finally {
+            input.disabled = false;
+          }
+        });
+      });
+      userRoleMenu.querySelector('.role-menu-manage')?.addEventListener('click', () => {
+        closeUserRoleMenu();
+        openAdminPanel('members', user.userKey);
+      });
+
+      userRoleMenu.classList.remove('hidden');
+      const rect = userRoleMenu.getBoundingClientRect();
+      const gap = 8;
+      let left = Number(clientX || gap);
+      let top = Number(clientY || gap);
+      if (left + rect.width > window.innerWidth - gap) left = window.innerWidth - rect.width - gap;
+      if (top + rect.height > window.innerHeight - gap) top = window.innerHeight - rect.height - gap;
+      userRoleMenu.style.left = `${Math.max(gap, left)}px`;
+      userRoleMenu.style.top = `${Math.max(gap, top)}px`;
+    } catch (error) {
+      notify(error.message || 'Não foi possível abrir os cargos.', true);
+    }
+  }
+
+  function ensureAdminModal() {
+    if (adminModal) return adminModal;
+    const wrap = document.createElement('div');
+    wrap.className = 'admin-modal-backdrop hidden';
+    wrap.innerHTML = `
+      <section class="admin-modal" role="dialog" aria-modal="true" aria-label="Administração do Conecta">
+        <header class="admin-modal-head">
+          <div><span class="brand-mark mini">C</span><div><strong>Administração do Conecta</strong><small>Cargos, membros e acesso aos canais</small></div></div>
+          <button type="button" data-admin-close aria-label="Fechar">×</button>
+        </header>
+        <nav class="admin-tabs">
+          <button type="button" data-admin-tab="roles">Cargos</button>
+          <button type="button" data-admin-tab="members">Membros</button>
+          <button type="button" data-admin-tab="channels">Canais</button>
+        </nav>
+        <div class="admin-body" data-admin-body></div>
+      </section>
+    `;
+    document.body.appendChild(wrap);
+    wrap.addEventListener('click', event => {
+      if (event.target === wrap || event.target.closest('[data-admin-close]')) closeAdminPanel();
+      const tab = event.target.closest('[data-admin-tab]')?.dataset.adminTab;
+      if (tab) loadAdminTab(tab);
+    });
+    adminModal = wrap;
+    return wrap;
+  }
+
+  function closeAdminPanel() {
+    adminModal?.classList.add('hidden');
+  }
+
+  async function openAdminPanel(tab = 'roles', memberKey = '') {
+    if (!canOpenAdmin()) return;
+    closeUserRoleMenu();
+    closeMobilePanels();
+    ensureAdminModal().classList.remove('hidden');
+    if (memberKey) adminSelectedMemberKey = memberKey;
+    await loadAdminTab(tab);
+  }
+
+  function adminBody() {
+    return adminModal?.querySelector('[data-admin-body]');
+  }
+
+  function syncAdminTabs() {
+    adminModal?.querySelectorAll('[data-admin-tab]').forEach(btn => {
+      const permission = btn.dataset.adminTab === 'roles' ? 'manage_roles' : btn.dataset.adminTab === 'members' ? 'manage_members' : 'manage_channels';
+      const allowed = btn.dataset.adminTab === 'channels'
+        ? (hasPermission('manage_channels') || hasPermission('manage_roles'))
+        : hasPermission(permission);
+      btn.classList.toggle('hidden', !allowed);
+      btn.classList.toggle('active', btn.dataset.adminTab === adminActiveTab);
+    });
+  }
+
+  async function loadAdminTab(tab) {
+    if (!adminModal) return;
+    const allowed = tab === 'roles' ? hasPermission('manage_roles')
+      : tab === 'members' ? hasPermission('manage_members')
+      : (hasPermission('manage_channels') || hasPermission('manage_roles'));
+    if (!allowed) {
+      tab = hasPermission('manage_roles') ? 'roles' : hasPermission('manage_members') ? 'members' : 'channels';
+    }
+    adminActiveTab = tab;
+    syncAdminTabs();
+    const body = adminBody();
+    if (!body) return;
+    body.innerHTML = '<div class="admin-loading">Carregando…</div>';
+    try {
+      if (tab === 'roles') await renderAdminRoles();
+      else if (tab === 'members') await renderAdminMembers();
+      else await renderAdminChannels();
+    } catch (error) {
+      body.innerHTML = `<div class="admin-empty">${escapeHtml(error.message || 'Não foi possível carregar esta área.')}</div>`;
+    }
+  }
+
+  async function renderAdminRoles() {
+    await ensureAdminRolesLoaded(true);
+    if (!adminSelectedRoleId || !adminRoles.some(role => role.id === adminSelectedRoleId)) adminSelectedRoleId = adminRoles[0]?.id || '';
+    const selected = adminRoles.find(role => role.id === adminSelectedRoleId) || null;
+    const body = adminBody();
+    body.innerHTML = `
+      <div class="admin-split">
+        <aside class="admin-list-pane">
+          <button type="button" class="admin-primary-small" data-new-role>＋ Novo cargo</button>
+          <div class="admin-role-list">
+            ${adminRoles.map(role => `
+              <button type="button" class="admin-role-item${role.id === adminSelectedRoleId ? ' active' : ''}" data-role-id="${escapeHtml(role.id)}">
+                <span class="role-color-dot" style="--role-color:${escapeHtml(role.color)}"></span>
+                <span><strong>${escapeHtml(role.name)}</strong><small>${role.memberCount} membro${role.memberCount === 1 ? '' : 's'}</small></span>
+                ${role.systemKey === 'admin' ? '<b>ADMIN</b>' : ''}
+              </button>
+            `).join('')}
+          </div>
+        </aside>
+        <section class="admin-editor-pane">
+          ${selected ? `
+            <div class="admin-editor-title"><div><h3>${escapeHtml(selected.name)}</h3><p>Edite nome, cor e o que este cargo pode fazer.</p></div>${selected.protected ? '<span class="protected-pill">Protegido</span>' : ''}</div>
+            <label class="admin-field">Nome do cargo<input data-role-name maxlength="32" value="${escapeHtml(selected.name)}" /></label>
+            <label class="admin-field admin-color-field">Cor<input data-role-color type="color" value="${escapeHtml(selected.color)}" /><span>${escapeHtml(selected.color)}</span></label>
+            <div class="admin-permissions">
+              <h4>Permissões</h4>
+              ${Object.entries(PERMISSION_LABELS).map(([key, label]) => `
+                <label class="admin-check">
+                  <input type="checkbox" data-role-permission="${key}" ${selected.permissions?.[key] ? 'checked' : ''} ${selected.protected ? 'disabled' : ''}/>
+                  <span><strong>${label}</strong><small>${key.startsWith('manage_') ? 'Permissão administrativa' : 'Permissão de uso'}</small></span>
+                </label>
+              `).join('')}
+            </div>
+            <div class="admin-editor-actions">
+              <button type="button" class="admin-save" data-save-role>Salvar alterações</button>
+              ${selected.protected ? '' : '<button type="button" class="admin-danger" data-delete-role>Excluir cargo</button>'}
+            </div>
+          ` : '<div class="admin-empty">Crie um cargo para começar.</div>'}
+        </section>
+      </div>
+    `;
+
+    body.querySelector('[data-new-role]')?.addEventListener('click', async () => {
+      const name = window.prompt('Nome do novo cargo:');
+      if (!name?.trim()) return;
+      await api('/api/admin/roles', { method: 'POST', body: JSON.stringify({ name, color: '#5865F2', permissions: { send_messages: true, join_voice: true, speak: true, camera: true, screen_share: true } }) });
+      adminSelectedRoleId = '';
+      notify('Cargo criado.');
+      await renderAdminRoles();
+    });
+    body.querySelectorAll('[data-role-id]').forEach(btn => btn.addEventListener('click', () => {
+      adminSelectedRoleId = btn.dataset.roleId;
+      renderAdminRoles();
+    }));
+    body.querySelector('[data-save-role]')?.addEventListener('click', async () => {
+      const name = body.querySelector('[data-role-name]')?.value || selected.name;
+      const color = body.querySelector('[data-role-color]')?.value || selected.color;
+      const permissions = {};
+      body.querySelectorAll('[data-role-permission]').forEach(input => { permissions[input.dataset.rolePermission] = input.checked; });
+      await api(`/api/admin/roles/${encodeURIComponent(selected.id)}`, { method: 'PATCH', body: JSON.stringify({ name, color, permissions }) });
+      notify('Cargo atualizado.');
+      await renderAdminRoles();
+    });
+    body.querySelector('[data-delete-role]')?.addEventListener('click', async () => {
+      if (!window.confirm(`Excluir o cargo "${selected.name}"?`)) return;
+      await api(`/api/admin/roles/${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
+      adminSelectedRoleId = '';
+      notify('Cargo excluído.');
+      await renderAdminRoles();
+    });
+    const colorInput = body.querySelector('[data-role-color]');
+    colorInput?.addEventListener('input', () => { colorInput.nextElementSibling.textContent = colorInput.value.toUpperCase(); });
+  }
+
+  async function renderAdminMembers() {
+    await ensureAdminRolesLoaded();
+    const data = await api('/api/admin/members');
+    adminMembers = Array.isArray(data.members) ? data.members : [];
+    if (!adminSelectedMemberKey || !adminMembers.some(member => member.userKey === adminSelectedMemberKey)) adminSelectedMemberKey = adminMembers[0]?.userKey || '';
+    const selected = adminMembers.find(member => member.userKey === adminSelectedMemberKey) || null;
+    const selectedIds = new Set((selected?.roles || []).map(role => role.id));
+    const body = adminBody();
+    body.innerHTML = `
+      <div class="admin-split members-admin-split">
+        <aside class="admin-list-pane">
+          <div class="admin-search-title">Membros cadastrados</div>
+          <div class="admin-member-list">
+            ${adminMembers.map(member => `
+              <button type="button" class="admin-member-item${member.userKey === adminSelectedMemberKey ? ' active' : ''}" data-member-key="${escapeHtml(member.userKey)}">
+                <span class="avatar">${escapeHtml(initials(member.name))}</span>
+                <span><strong>${escapeHtml(member.name)}</strong><small>${member.isMaster ? 'ADM Master' : member.roles?.length ? member.roles.map(r => r.name).join(', ') : 'Sem cargo'}</small></span>
+              </button>
+            `).join('') || '<div class="admin-empty">Nenhum membro cadastrado.</div>'}
+          </div>
+        </aside>
+        <section class="admin-editor-pane">
+          ${selected ? `
+            <div class="admin-editor-title"><div><h3>${escapeHtml(selected.name)}</h3><p>${selected.isMaster ? 'ADM Master permanente. Os cargos adicionais podem ser alterados abaixo.' : 'Marque os cargos que este membro deve ter.'}</p></div>${selected.isMaster ? '<span class="protected-pill master">MASTER</span>' : ''}</div>
+            <div class="admin-member-role-grid">
+              ${adminRoles.map(role => `
+                <label class="admin-role-toggle">
+                  <input type="checkbox" value="${escapeHtml(role.id)}" ${selectedIds.has(role.id) ? 'checked' : ''}/>
+                  <span class="role-color-dot" style="--role-color:${escapeHtml(role.color)}"></span>
+                  <span><strong>${escapeHtml(role.name)}</strong><small>${role.systemKey === 'admin' ? 'Controle total igual ao dono' : 'Cargo personalizado'}</small></span>
+                </label>
+              `).join('')}
+            </div>
+            <div class="admin-editor-actions"><button type="button" class="admin-save" data-save-member-roles>Salvar cargos</button></div>
+          ` : '<div class="admin-empty">Selecione um membro.</div>'}
+        </section>
+      </div>
+    `;
+    body.querySelectorAll('[data-member-key]').forEach(btn => btn.addEventListener('click', () => {
+      adminSelectedMemberKey = btn.dataset.memberKey;
+      renderAdminMembers();
+    }));
+    body.querySelector('[data-save-member-roles]')?.addEventListener('click', async () => {
+      const roleIds = [...body.querySelectorAll('.admin-member-role-grid input:checked')].map(input => input.value);
+      await setMemberRoles(selected.userKey, roleIds);
+      notify('Cargos do membro atualizados.');
+      await renderAdminMembers();
+    });
+  }
+
+  async function renderAdminChannels() {
+    await ensureAdminRolesLoaded();
+    const data = await api('/api/admin/channels');
+    adminChannels = Array.isArray(data.channels) ? data.channels : [];
+    const body = adminBody();
+    body.innerHTML = `
+      <div class="admin-channel-page">
+        <div class="admin-page-copy"><h3>Quem pode ver cada canal</h3><p>Usuários sem cargo veem somente a Sala de Todos. ADMIN e ADM Master sempre enxergam tudo.</p></div>
+        <div class="admin-channel-list">
+          ${adminChannels.map(channel => {
+            const selected = new Set(channel.roleIds || []);
+            return `
+              <section class="admin-channel-card" data-access-channel="${escapeHtml(channel.id)}">
+                <div class="admin-channel-card-head"><strong>${channel.type === 'text' ? '#' : '🔊'} ${escapeHtml(channel.name)}</strong>${channel.isLobby ? '<span class="lobby-pill">Todos</span>' : ''}</div>
+                ${channel.isLobby ? '<p>A Sala de Todos é sempre visível, inclusive para quem ainda não tem cargo.</p>' : `
+                  <div class="admin-channel-role-grid">
+                    ${adminRoles.filter(role => role.systemKey !== 'admin').map(role => `
+                      <label><input type="checkbox" value="${escapeHtml(role.id)}" ${selected.has(role.id) ? 'checked' : ''}/><span class="role-color-dot" style="--role-color:${escapeHtml(role.color)}"></span><span>${escapeHtml(role.name)}</span></label>
+                    `).join('') || '<span class="admin-empty">Crie cargos para liberar este canal.</span>'}
+                  </div>
+                  <button type="button" class="admin-save small" data-save-channel-access>Salvar acesso</button>
+                `}
+              </section>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+    body.querySelectorAll('[data-access-channel]').forEach(card => {
+      card.querySelector('[data-save-channel-access]')?.addEventListener('click', async () => {
+        const roleIds = [...card.querySelectorAll('input:checked')].map(input => input.value);
+        await api(`/api/admin/channels/${encodeURIComponent(card.dataset.accessChannel)}/access`, { method: 'PUT', body: JSON.stringify({ roleIds }) });
+        notify('Acesso do canal atualizado.');
+      });
+    });
+  }
+
   fullscreenCallBtn?.addEventListener('click', toggleCallFullscreen);
   document.addEventListener('fullscreenchange', () => {
     if (!fullscreenCallBtn) return;
@@ -1608,6 +2074,7 @@
   });
 
   document.addEventListener('click', (event) => {
+    if (suppressNextUserClick) { suppressNextUserClick = false; event.preventDefault(); event.stopPropagation(); return; }
     const voiceMember = event.target.closest('.voice-member.volume-user[data-participant]');
     if (voiceMember && currentVoiceRoom) {
       event.stopPropagation();
@@ -1615,18 +2082,22 @@
       return;
     }
     if (volumePopover && !volumePopover.contains(event.target)) closeVolumePopover();
+    if (userRoleMenu && !userRoleMenu.contains(event.target) && !event.target.closest('.manageable-user')) closeUserRoleMenu();
     if (channelMenuPopover && !channelMenuPopover.contains(event.target) && !event.target.closest('[data-channel-menu]')) closeChannelMenu();
   });
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && volumePopoverIdentity) closeVolumePopover();
     if (event.key === 'Escape' && channelMenuTarget) closeChannelMenu();
+    if (event.key === 'Escape') closeUserRoleMenu();
+    if (event.key === 'Escape' && adminModal && !adminModal.classList.contains('hidden')) closeAdminPanel();
     if (event.key === 'Escape' && isMobileLayout()) closeMobilePanels();
   });
 
   window.addEventListener('resize', () => {
     closeVolumePopover();
     closeChannelMenu();
+    closeUserRoleMenu();
     if (!isMobileLayout()) closeMobilePanels();
     else syncMobileBackdrop();
   });
@@ -1637,6 +2108,41 @@
   });
   mobileChannelsClose?.addEventListener('click', closeMobileChannels);
   mobileDrawerBackdrop?.addEventListener('click', closeMobilePanels);
+
+  document.addEventListener('contextmenu', event => {
+    const target = event.target.closest('.manageable-user[data-user-key]');
+    if (!target || !hasPermission('manage_members')) return;
+    event.preventDefault();
+    const user = findPresenceUserByKey(target.dataset.userKey) || {
+      userKey: target.dataset.userKey,
+      name: target.dataset.userName || 'Usuário',
+      roleIds: [],
+    };
+    openUserRoleMenu(user, event.clientX, event.clientY);
+  });
+
+  document.addEventListener('pointerdown', event => {
+    if (!isMobileLayout() || !hasPermission('manage_members')) return;
+    const target = event.target.closest('.manageable-user[data-user-key]');
+    if (!target) return;
+    clearTimeout(userLongPressTimer);
+    userLongPressTimer = setTimeout(() => {
+      suppressNextUserClick = true;
+      const user = findPresenceUserByKey(target.dataset.userKey) || {
+        userKey: target.dataset.userKey,
+        name: target.dataset.userName || 'Usuário',
+        roleIds: [],
+      };
+      const rect = target.getBoundingClientRect();
+      openUserRoleMenu(user, Math.min(window.innerWidth - 16, rect.left + 16), Math.min(window.innerHeight - 16, rect.top + 16));
+    }, 600);
+  }, { passive: true });
+  ['pointerup', 'pointercancel', 'pointermove'].forEach(type => document.addEventListener(type, () => {
+    clearTimeout(userLongPressTimer);
+    userLongPressTimer = null;
+  }, { passive: true }));
+
+  adminSettingsBtn?.addEventListener('click', () => openAdminPanel('roles'));
 
   membersToggle.addEventListener('click', () => {
     if (isMobileLayout()) {
