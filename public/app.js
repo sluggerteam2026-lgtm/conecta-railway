@@ -615,9 +615,80 @@
 
   function updateVideoLayout() {
     const tiles = [...videoGrid.querySelectorAll('.video-tile')];
+    const hasScreen = tiles.some(tile => tile.classList.contains('screen'));
+
     videoGrid.classList.toggle('single-video', tiles.length === 1);
     videoGrid.classList.toggle('two-videos', tiles.length === 2);
-    videoGrid.classList.toggle('has-screen', tiles.some(tile => tile.classList.contains('screen')));
+    videoGrid.classList.toggle('has-screen', hasScreen);
+    callStage.classList.toggle('screen-active', hasScreen);
+
+    // Quando uma live começa, ela vira automaticamente o destaque principal.
+    if (hasScreen && !tiles.some(tile => tile.classList.contains('focused'))) {
+      tiles.find(tile => tile.classList.contains('screen'))?.classList.add('focused');
+    }
+
+    if (!hasScreen && tiles.length <= 1) {
+      tiles.forEach(tile => tile.classList.remove('focused'));
+    }
+
+    videoGrid.classList.toggle('has-focus', tiles.some(tile => tile.classList.contains('focused')));
+  }
+
+  function focusVideoTile(tile) {
+    if (!tile || !videoGrid.contains(tile)) return;
+    const tiles = [...videoGrid.querySelectorAll('.video-tile')];
+    if (tiles.length <= 1) return;
+
+    const hasScreen = tiles.some(item => item.classList.contains('screen'));
+    const wasFocused = tile.classList.contains('focused');
+    tiles.forEach(item => item.classList.remove('focused'));
+
+    // Sem compartilhamento de tela, clicar novamente no destaque volta para a grade normal.
+    if (!(wasFocused && !hasScreen)) tile.classList.add('focused');
+    updateVideoLayout();
+  }
+
+  async function toggleVideoTileFullscreen(tile) {
+    if (!tile) return;
+    try {
+      if (document.fullscreenElement === tile) {
+        await document.exitFullscreen();
+      } else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await tile.requestFullscreen();
+      }
+    } catch (error) {
+      console.error(error);
+      notify('Não foi possível abrir este vídeo em tela cheia.', true);
+    }
+  }
+
+  function prepareVideoTile(tile) {
+    if (!tile || tile.dataset.interactive === 'true') return;
+    tile.dataset.interactive = 'true';
+    tile.tabIndex = 0;
+    tile.title = 'Clique para destacar • duplo clique para tela cheia';
+
+    const fullscreenBtn = document.createElement('button');
+    fullscreenBtn.type = 'button';
+    fullscreenBtn.className = 'video-tile-fullscreen';
+    fullscreenBtn.textContent = '⛶';
+    fullscreenBtn.title = 'Tela cheia';
+    fullscreenBtn.setAttribute('aria-label', 'Abrir vídeo em tela cheia');
+    fullscreenBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleVideoTileFullscreen(tile);
+    });
+    tile.appendChild(fullscreenBtn);
+
+    tile.addEventListener('click', () => focusVideoTile(tile));
+    tile.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      toggleVideoTileFullscreen(tile);
+    });
+    tile.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') focusVideoTile(tile);
+    });
   }
 
   async function toggleCallFullscreen() {
@@ -650,6 +721,7 @@
     badge.className = 'video-label';
     badge.textContent = `${label}${local ? ' (você)' : ''}${isScreen ? ' • tela' : ''}`;
     tile.appendChild(badge);
+    prepareVideoTile(tile);
     videoGrid.appendChild(tile);
     updateEmptyVideo();
     updateVideoLayout();
@@ -685,6 +757,7 @@
       video.autoplay = true; video.playsInline = true; video.muted = true;
       tile.appendChild(video);
       const badge = document.createElement('div'); badge.className = 'video-label'; badge.textContent = `${profileName} (você)${isScreen ? ' • tela' : ''}`; tile.appendChild(badge);
+      prepareVideoTile(tile);
       videoGrid.appendChild(tile);
     }
     updateEmptyVideo();
