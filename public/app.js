@@ -61,6 +61,10 @@
   let cueAudioContext = null;
   const voiceTokenCache = new Map();
   const voiceTokenRequests = new Map();
+  const participantVolumes = new Map();
+  const participantMuted = new Map();
+  let volumePopover = null;
+  let volumePopoverIdentity = '';
 
 
   function notify(text, isError = false) {
@@ -79,11 +83,102 @@
     return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
   }
 
+  function getParticipantVolume(identity) {
+    return participantVolumes.has(identity) ? participantVolumes.get(identity) : 1;
+  }
+
+  function isParticipantMuted(identity) {
+    return participantMuted.get(identity) === true;
+  }
+
+  function applyParticipantAudioState(identity) {
+    if (!identity) return;
+    audioBin.querySelectorAll('audio').forEach(el => {
+      if (el.dataset.participant !== identity) return;
+      el.muted = !roomSoundEnabled || isParticipantMuted(identity);
+      el.volume = getParticipantVolume(identity);
+    });
+  }
+
   function applyRoomSoundState() {
     audioBin.querySelectorAll('audio').forEach(el => {
-      el.muted = !roomSoundEnabled;
-      el.volume = roomSoundEnabled ? 1 : 0;
+      const identity = el.dataset.participant || '';
+      el.muted = !roomSoundEnabled || (identity && isParticipantMuted(identity));
+      el.volume = identity ? getParticipantVolume(identity) : 1;
     });
+  }
+
+  function ensureVolumePopover() {
+    if (volumePopover) return volumePopover;
+    volumePopover = document.createElement('div');
+    volumePopover.className = 'volume-popover hidden';
+    volumePopover.innerHTML = `
+      <div class="volume-popover-head">
+        <strong data-volume-name>Volume</strong>
+        <button type="button" data-volume-close aria-label="Fechar">×</button>
+      </div>
+      <div class="volume-popover-row"><span>Volume</span><b data-volume-value>100%</b></div>
+      <input data-volume-range class="volume-range" type="range" min="0" max="100" step="1" value="100" />
+      <button type="button" class="volume-mute-btn" data-volume-mute>🔇 Silenciar só esta pessoa</button>
+      <small>Esse ajuste vale somente no seu computador.</small>
+    `;
+    document.body.appendChild(volumePopover);
+
+    const range = volumePopover.querySelector('[data-volume-range]');
+    const muteBtn = volumePopover.querySelector('[data-volume-mute]');
+    volumePopover.querySelector('[data-volume-close]').addEventListener('click', closeVolumePopover);
+
+    range.addEventListener('input', () => {
+      if (!volumePopoverIdentity) return;
+      const value = Number(range.value) / 100;
+      participantVolumes.set(volumePopoverIdentity, value);
+      volumePopover.querySelector('[data-volume-value]').textContent = `${Math.round(value * 100)}%`;
+      applyParticipantAudioState(volumePopoverIdentity);
+    });
+
+    muteBtn.addEventListener('click', () => {
+      if (!volumePopoverIdentity) return;
+      participantMuted.set(volumePopoverIdentity, !isParticipantMuted(volumePopoverIdentity));
+      updateVolumePopoverState();
+      applyParticipantAudioState(volumePopoverIdentity);
+    });
+
+    return volumePopover;
+  }
+
+  function updateVolumePopoverState() {
+    if (!volumePopover || !volumePopoverIdentity) return;
+    const muted = isParticipantMuted(volumePopoverIdentity);
+    const volume = getParticipantVolume(volumePopoverIdentity);
+    volumePopover.querySelector('[data-volume-range]').value = String(Math.round(volume * 100));
+    volumePopover.querySelector('[data-volume-value]').textContent = `${Math.round(volume * 100)}%`;
+    const muteBtn = volumePopover.querySelector('[data-volume-mute]');
+    muteBtn.textContent = muted ? '🔊 Ouvir novamente' : '🔇 Silenciar só esta pessoa';
+    muteBtn.classList.toggle('muted', muted);
+  }
+
+  function openVolumePopover(identity, name, anchor) {
+    if (!identity || !anchor) return;
+    if (lkRoom?.localParticipant?.identity === identity) return;
+    const popover = ensureVolumePopover();
+    volumePopoverIdentity = identity;
+    popover.querySelector('[data-volume-name]').textContent = name || 'Volume';
+    updateVolumePopoverState();
+    popover.classList.remove('hidden');
+
+    const rect = anchor.getBoundingClientRect();
+    const width = 240;
+    const gap = 8;
+    let left = rect.right + gap;
+    if (left + width > window.innerWidth - gap) left = Math.max(gap, rect.left - width - gap);
+    const top = Math.max(gap, Math.min(rect.top, window.innerHeight - 170));
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+  }
+
+  function closeVolumePopover() {
+    volumePopoverIdentity = '';
+    volumePopover?.classList.add('hidden');
   }
 
   function playVoiceCue(type) {
@@ -221,7 +316,7 @@
         }
 
         list.innerHTML = people.map(user => `
-          <div class="voice-member" title="${escapeHtml(user.name)}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}>
+          <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}>
             <span class="voice-member-dot"></span>
             <span>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</span>
             <span class="voice-member-states">
@@ -394,9 +489,9 @@
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach();
           el.autoplay = true;
-          el.muted = !roomSoundEnabled;
-          el.volume = roomSoundEnabled ? 1 : 0;
+          el.dataset.participant = participant.identity;
           audioBin.appendChild(el);
+          applyParticipantAudioState(participant.identity);
         } else if (track.kind === Track.Kind.Video) {
           addVideoTrack(
             track,
@@ -418,6 +513,9 @@
       lkRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
         playVoiceCue('leave');
         document.querySelectorAll(`[data-participant="${CSS.escape(participant.identity)}"]`).forEach(el => el.remove());
+        participantVolumes.delete(participant.identity);
+        participantMuted.delete(participant.identity);
+        if (volumePopoverIdentity === participant.identity) closeVolumePopover();
         updateEmptyVideo();
       });
       lkRoom.on(RoomEvent.Disconnected, () => {
@@ -655,6 +753,9 @@
     document.querySelectorAll('.voice-channel').forEach(el => el.classList.remove('connected'));
     document.querySelectorAll('.video-tile').forEach(el => el.remove());
     document.querySelectorAll('.speaking').forEach(el => el.classList.remove('speaking'));
+    participantVolumes.clear();
+    participantMuted.clear();
+    closeVolumePopover();
     audioBin.innerHTML = '';
     updateControlButtons();
     updateEmptyVideo();
@@ -675,6 +776,22 @@
     callCollapsed = !callCollapsed;
     if (callCollapsed) callStage.classList.add('hidden');
   });
+
+  document.addEventListener('click', (event) => {
+    const voiceMember = event.target.closest('.voice-member.volume-user[data-participant]');
+    if (voiceMember && currentVoiceRoom) {
+      event.stopPropagation();
+      openVolumePopover(voiceMember.dataset.participant, voiceMember.dataset.name || 'Volume', voiceMember);
+      return;
+    }
+    if (volumePopover && !volumePopover.contains(event.target)) closeVolumePopover();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && volumePopoverIdentity) closeVolumePopover();
+  });
+
+  window.addEventListener('resize', closeVolumePopover);
 
   membersToggle.addEventListener('click', () => membersPanel.classList.toggle('open'));
   logoutBtn.addEventListener('click', signOut);
