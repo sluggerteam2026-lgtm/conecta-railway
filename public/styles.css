@@ -86,3 +86,20 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
   0%,100%{transform:scale(1);opacity:.9}
   50%{transform:scale(1.3);opacity:1}
 }
+
+
+/* Etapa 2: volume individual por pessoa */
+.voice-member.volume-user{cursor:pointer}
+.voice-member.volume-user:hover{background:#3a3c42}
+.volume-popover{position:fixed;z-index:1400;width:240px;padding:12px;border:1px solid #2f3136;border-radius:8px;background:#111214;color:#f2f3f5;box-shadow:0 12px 34px rgba(0,0,0,.48)}
+.volume-popover-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+.volume-popover-head strong{font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.volume-popover-head button{width:26px;height:26px;border-radius:4px;background:transparent;color:#b5bac1;cursor:pointer;font-size:18px;line-height:1}
+.volume-popover-head button:hover{background:#2b2d31;color:#fff}
+.volume-popover-row{display:flex;align-items:center;justify-content:space-between;color:#b5bac1;font-size:11px;margin-bottom:7px}
+.volume-popover-row b{color:#dbdee1;font-size:11px}
+.volume-range{width:100%;accent-color:var(--brand);cursor:pointer}
+.volume-mute-btn{width:100%;height:34px;margin-top:10px;border-radius:4px;background:#2b2d31;color:#dbdee1;cursor:pointer;font-size:11px}
+.volume-mute-btn:hover{background:#35373c;color:#fff}
+.volume-mute-btn.muted{background:#3b292b;color:#f0a1a3}
+.volume-popover small{display:block;margin-top:9px;color:#80848e;font-size:10px;line-height:1.35}
