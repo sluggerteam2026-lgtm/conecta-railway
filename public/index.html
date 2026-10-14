@@ -56,18 +56,14 @@
       </div>
 
       <div class="channel-scroll">
-        <section class="channel-section">
-          <h3><span>⌄</span> CANAIS DE TEXTO</h3>
-          <button class="channel text-channel active" data-channel="geral"><span class="channel-icon">#</span><span>geral</span></button>
-          <button class="channel text-channel" data-channel="jogos"><span class="channel-icon">#</span><span>jogos</span></button>
-          <button class="channel text-channel" data-channel="links-e-assuntos"><span class="channel-icon">#</span><span>links-e-assuntos</span></button>
+        <section class="channel-section" id="textChannelSection">
+          <h3><span>⌄</span><span class="channel-section-title">CANAIS DE TEXTO</span><button id="createTextChannelBtn" class="channel-add-btn" type="button" title="Criar canal de texto" aria-label="Criar canal de texto">＋</button></h3>
+          <div id="textChannelsList" class="channel-list"></div>
         </section>
 
-        <section class="channel-section voice-section">
-          <h3><span>⌄</span> CANAIS DE VOZ</h3>
-          <button class="channel voice-channel" data-room="sala-da-turma"><span class="channel-icon">🔊</span><span>Sala da turma</span><b class="voice-count" data-count="sala-da-turma">0</b></button>
-          <button class="channel voice-channel" data-room="jogando-juntos"><span class="channel-icon">🔊</span><span>Jogando juntos</span><b class="voice-count" data-count="jogando-juntos">0</b></button>
-          <button class="channel voice-channel" data-room="cinema-live"><span class="channel-icon">🔊</span><span>Cinema & live</span><b class="voice-count" data-count="cinema-live">0</b></button>
+        <section class="channel-section voice-section" id="voiceChannelSection">
+          <h3><span>⌄</span><span class="channel-section-title">CANAIS DE VOZ</span><button id="createVoiceChannelBtn" class="channel-add-btn" type="button" title="Criar sala de voz" aria-label="Criar sala de voz">＋</button></h3>
+          <div id="voiceChannelsList" class="channel-list"></div>
         </section>
       </div>
 
@@ -137,7 +133,7 @@
         <div class="welcome-message">
           <div class="hash-bubble">#</div>
           <h2>Bem-vindo ao <span id="welcomeChannel">#geral</span>!</h2>
-          <p>Este é o começo do canal #geral. As mensagens aparecem ao vivo e não ficam salvas no servidor.</p>
+          <p>As mensagens deste canal ficam salvas no Conecta.</p>
         </div>
       </section>
 
