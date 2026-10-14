@@ -46,9 +46,11 @@
   };
 
   const SAVED_NAME_KEY = 'conecta.savedName';
+  const SAVED_USER_KEY = 'conecta.userKey';
 
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
+  let userKey = localStorage.getItem(SAVED_USER_KEY) || '';
   let socket = null;
   let reauthenticating = false;
   let socketEverConnected = false;
@@ -68,6 +70,7 @@
   const participantMuted = new Map();
   let volumePopover = null;
   let volumePopoverIdentity = '';
+  let historyLoadToken = 0;
 
 
   function notify(text, isError = false) {
@@ -84,6 +87,19 @@
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  }
+
+  function ensureUserKey() {
+    if (userKey) return userKey;
+    if (window.crypto?.randomUUID) {
+      userKey = window.crypto.randomUUID();
+    } else {
+      const bytes = new Uint8Array(16);
+      window.crypto?.getRandomValues?.(bytes);
+      userKey = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('') || `${Date.now()}${Math.random().toString(36).slice(2)}`;
+    }
+    localStorage.setItem(SAVED_USER_KEY, userKey);
+    return userKey;
   }
 
   function getParticipantVolume(identity) {
@@ -234,10 +250,12 @@
     try {
       const data = await api('/api/login', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, userKey: ensureUserKey() }),
       });
       sessionId = data.sessionId;
       profileName = data.name;
+      userKey = data.userKey || ensureUserKey();
+      localStorage.setItem(SAVED_USER_KEY, userKey);
       voiceTokenCache.clear();
       voiceTokenRequests.clear();
       sessionStorage.setItem('conecta.sessionId', sessionId);
@@ -266,6 +284,7 @@
     selfName.textContent = profileName;
     selfAvatar.textContent = initials(profileName);
     connectSocket();
+    loadChannelHistory(currentChannel);
   }
 
   function connectSocket() {
@@ -287,7 +306,10 @@
       // Ao reconectar, o servidor cria o socket de novo. Restauramos o canal e a presença de voz.
       if (currentChannel !== 'geral') socket.emit('join-text-channel', currentChannel);
       if (currentVoiceRoom) emitVoiceState();
-      if (recovered) notify('Conexão restabelecida.');
+      if (recovered) {
+        loadChannelHistory(currentChannel);
+        notify('Conexão restabelecida.');
+      }
 
       // Deixa os tokens das salas prontos em segundo plano para o clique responder mais rápido.
       setTimeout(() => {
@@ -380,6 +402,21 @@
       if (msg.channel !== currentChannel) return;
       appendMessage(msg);
     });
+
+    socket.on('message-edited', (msg) => {
+      if (msg.channel !== currentChannel) return;
+      updateMessageElement(msg);
+    });
+
+    socket.on('message-deleted', (msg) => {
+      if (msg.channel !== currentChannel) return;
+      const element = messages.querySelector(`[data-message-id="${CSS.escape(msg.id)}"]`);
+      element?.remove();
+    });
+
+    socket.on('chat-error', (payload = {}) => {
+      notify(payload.message || 'Não foi possível concluir a ação no chat.', true);
+    });
   }
 
   function clearMessagesForChannel() {
@@ -387,8 +424,27 @@
       <div class="welcome-message">
         <div class="hash-bubble">#</div>
         <h2>Bem-vindo ao <span>#${escapeHtml(channelNames[currentChannel][0])}</span></h2>
-        <p>As mensagens aparecem ao vivo e não ficam salvas no servidor.</p>
+        <p>As mensagens deste canal ficam salvas e podem ser editadas ou excluídas por quem enviou.</p>
       </div>`;
+  }
+
+  async function loadChannelHistory(channel) {
+    const requestToken = ++historyLoadToken;
+    clearMessagesForChannel();
+
+    try {
+      const data = await api(`/api/messages/${encodeURIComponent(channel)}`);
+      if (requestToken !== historyLoadToken || channel !== currentChannel) return;
+
+      for (const msg of data.messages || []) {
+        appendMessage(msg, { scroll: false });
+      }
+      sortMessagesByTime();
+      messages.scrollTop = messages.scrollHeight;
+    } catch (error) {
+      if (requestToken !== historyLoadToken || channel !== currentChannel) return;
+      notify(error.message || 'Não foi possível carregar as mensagens.', true);
+    }
   }
 
   document.querySelectorAll('.text-channel').forEach(button => {
@@ -401,7 +457,7 @@
       document.querySelector('#channelTitle').textContent = channelNames[channel][0];
       document.querySelector('#channelSubtitle').textContent = channelNames[channel][1];
       messageInput.placeholder = `Conversar em #${channelNames[channel][0]}`;
-      clearMessagesForChannel();
+      loadChannelHistory(channel);
     });
   });
 
@@ -413,16 +469,137 @@
     messageInput.value = '';
   });
 
-  function appendMessage(msg) {
+  function appendMessage(msg, { scroll = true } = {}) {
+    if (!msg?.id) return;
+    if (messages.querySelector(`[data-message-id="${CSS.escape(msg.id)}"]`)) return;
+
     const div = document.createElement('div');
-    div.className = 'message';
+    div.className = `message${msg.mine ? ' own-message' : ''}`;
+    div.dataset.messageId = msg.id;
+    div.dataset.ts = String(Number(msg.ts) || Date.now());
+
     const time = new Date(msg.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     div.innerHTML = `
       <div class="avatar">${escapeHtml(initials(msg.name))}</div>
-      <div><div class="message-head"><strong>${escapeHtml(msg.name)}</strong><time>${time}</time></div><p>${escapeHtml(msg.text)}</p></div>`;
+      <div class="message-content">
+        <div class="message-head">
+          <strong>${escapeHtml(msg.name)}</strong>
+          <time>${time}</time>
+          <span class="message-edited${msg.editedAt ? '' : ' hidden'}">(editada)</span>
+        </div>
+        <p class="message-text">${escapeHtml(msg.text)}</p>
+      </div>
+      ${msg.mine ? `
+        <div class="message-actions" aria-label="Ações da mensagem">
+          <button type="button" data-message-edit title="Editar mensagem" aria-label="Editar mensagem">✎</button>
+          <button type="button" data-message-delete title="Excluir mensagem" aria-label="Excluir mensagem">🗑</button>
+        </div>
+      ` : ''}
+    `;
+
     messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
+    if (scroll) messages.scrollTop = messages.scrollHeight;
   }
+
+  function sortMessagesByTime() {
+    const items = [...messages.querySelectorAll('.message')];
+    items.sort((a, b) => Number(a.dataset.ts || 0) - Number(b.dataset.ts || 0));
+    items.forEach(item => messages.appendChild(item));
+  }
+
+  function updateMessageElement(msg) {
+    const element = messages.querySelector(`[data-message-id="${CSS.escape(msg.id)}"]`);
+    if (!element) return;
+
+    const editor = element.querySelector('.message-editor');
+    if (editor) {
+      const p = document.createElement('p');
+      p.className = 'message-text';
+      p.textContent = msg.text;
+      editor.replaceWith(p);
+    } else {
+      const text = element.querySelector('.message-text');
+      if (text) text.textContent = msg.text;
+    }
+
+    const edited = element.querySelector('.message-edited');
+    if (edited) edited.classList.remove('hidden');
+  }
+
+  function startMessageEdit(messageElement) {
+    const textElement = messageElement?.querySelector('.message-text');
+    if (!textElement || messageElement.querySelector('.message-editor')) return;
+
+    const originalText = textElement.textContent;
+    const editor = document.createElement('div');
+    editor.className = 'message-editor';
+
+    const textarea = document.createElement('textarea');
+    textarea.value = originalText;
+    textarea.maxLength = 1500;
+    textarea.rows = 2;
+
+    const actions = document.createElement('div');
+    actions.className = 'message-editor-actions';
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Salvar';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancelar';
+
+    actions.append(save, cancel);
+    editor.append(textarea, actions);
+    textElement.replaceWith(editor);
+
+    const restore = () => {
+      const p = document.createElement('p');
+      p.className = 'message-text';
+      p.textContent = originalText;
+      editor.replaceWith(p);
+    };
+
+    const submit = () => {
+      const text = textarea.value.trim();
+      if (!text) return;
+      socket?.emit('edit-message', { id: messageElement.dataset.messageId, text });
+      save.disabled = true;
+      textarea.disabled = true;
+    };
+
+    save.addEventListener('click', submit);
+    cancel.addEventListener('click', restore);
+    textarea.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        restore();
+      } else if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        submit();
+      }
+    });
+
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  messages.addEventListener('click', (event) => {
+    const messageElement = event.target.closest('.message[data-message-id]');
+    if (!messageElement) return;
+
+    if (event.target.closest('[data-message-edit]')) {
+      startMessageEdit(messageElement);
+      return;
+    }
+
+    if (event.target.closest('[data-message-delete]')) {
+      if (window.confirm('Excluir esta mensagem?')) {
+        socket?.emit('delete-message', { id: messageElement.dataset.messageId });
+      }
+    }
+  });
 
   document.querySelectorAll('.voice-channel').forEach(button => {
     const warmRoom = () => prefetchVoiceToken(button.dataset.room);
