@@ -60,6 +60,9 @@
   let screenEnabled = false;
   let callCollapsed = false;
   let cueAudioContext = null;
+  const voiceTokenCache = new Map();
+  const voiceTokenRequests = new Map();
+
 
   function notify(text, isError = false) {
     toast.textContent = text;
@@ -127,6 +130,8 @@
       });
       sessionId = data.sessionId;
       profileName = data.name;
+      voiceTokenCache.clear();
+      voiceTokenRequests.clear();
       sessionStorage.setItem('conecta.sessionId', sessionId);
       sessionStorage.setItem('conecta.name', profileName);
       if (remember) {
@@ -159,6 +164,15 @@
   function connectSocket() {
     if (socket) socket.disconnect();
     socket = io({ auth: { sessionId } });
+
+    socket.on('connect', () => {
+      // Deixa os tokens das salas prontos em segundo plano para o clique responder mais rápido.
+      setTimeout(() => {
+        document.querySelectorAll('.voice-channel').forEach(button => {
+          prefetchVoiceToken(button.dataset.room);
+        });
+      }, 120);
+    });
 
     socket.on('connect_error', async (error) => {
       const message = error.message || 'Não foi possível entrar na turma.';
@@ -273,8 +287,64 @@
   }
 
   document.querySelectorAll('.voice-channel').forEach(button => {
+    const warmRoom = () => prefetchVoiceToken(button.dataset.room);
+    button.addEventListener('pointerenter', warmRoom, { passive: true });
+    button.addEventListener('pointerdown', warmRoom, { passive: true });
+    button.addEventListener('focus', warmRoom);
     button.addEventListener('click', () => joinVoice(button.dataset.room));
   });
+
+  async function requestVoiceToken(roomName) {
+    const data = await api('/api/livekit-token', {
+      method: 'POST',
+      body: JSON.stringify({ room: roomName }),
+    });
+    // O token do servidor vale 15 minutos. Renovamos antes disso.
+    voiceTokenCache.set(roomName, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return data;
+  }
+
+  function prefetchVoiceToken(roomName) {
+    if (!roomName || !sessionId) return;
+    const cached = voiceTokenCache.get(roomName);
+    if (cached && cached.expiresAt > Date.now()) return;
+    if (voiceTokenRequests.has(roomName)) return;
+
+    const pending = requestVoiceToken(roomName)
+      .catch(() => null)
+      .finally(() => voiceTokenRequests.delete(roomName));
+    voiceTokenRequests.set(roomName, pending);
+  }
+
+  async function getVoiceToken(roomName) {
+    const cached = voiceTokenCache.get(roomName);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+    const pending = voiceTokenRequests.get(roomName);
+    if (pending) {
+      const data = await pending;
+      if (data) return data;
+    }
+
+    return requestVoiceToken(roomName);
+  }
+
+  function showVoiceRoomImmediately(roomName) {
+    currentVoiceRoom = roomName;
+    micEnabled = false;
+    cameraEnabled = false;
+    screenEnabled = false;
+    voiceDock.classList.remove('hidden');
+    voiceRoomLabel.textContent = voiceNames[roomName];
+    callStageTitle.textContent = voiceNames[roomName];
+    callStage.classList.remove('hidden');
+    callCollapsed = false;
+    document.querySelectorAll('.voice-channel').forEach(el => {
+      el.classList.toggle('connected', el.dataset.room === roomName);
+    });
+    updateControlButtons();
+    emitVoiceState();
+  }
 
   function emitVoiceState() {
     if (!currentVoiceRoom) return;
@@ -293,10 +363,13 @@
     }
     try {
       await leaveVoice(false);
-      const data = await api('/api/livekit-token', {
-        method: 'POST',
-        body: JSON.stringify({ room: roomName }),
-      });
+
+      // Resposta visual imediata: o usuário já aparece na sala assim que clica.
+      showVoiceRoomImmediately(roomName);
+      playVoiceCue('join');
+
+      // Na maioria dos cliques este token já foi preparado em segundo plano.
+      const data = await getVoiceToken(roomName);
 
       const { Room, RoomEvent, Track } = LivekitClient;
       lkRoom = new Room({
@@ -334,14 +407,6 @@
       });
 
       await lkRoom.connect(data.url, data.token);
-      currentVoiceRoom = roomName;
-      voiceDock.classList.remove('hidden');
-      voiceRoomLabel.textContent = voiceNames[roomName];
-      callStageTitle.textContent = voiceNames[roomName];
-      callStage.classList.remove('hidden');
-      callCollapsed = false;
-      document.querySelectorAll('.voice-channel').forEach(el => el.classList.toggle('connected', el.dataset.room === roomName));
-      playVoiceCue('join');
 
       try {
         await lkRoom.localParticipant.setMicrophoneEnabled(true);
