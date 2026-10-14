@@ -13,6 +13,10 @@
   const onlineCount = document.querySelector('#onlineCount');
   const membersPanel = document.querySelector('#membersPanel');
   const membersToggle = document.querySelector('#membersToggle');
+  const channelsPanel = document.querySelector('#channelsPanel');
+  const mobileChannelsToggle = document.querySelector('#mobileChannelsToggle');
+  const mobileChannelsClose = document.querySelector('#mobileChannelsClose');
+  const mobileDrawerBackdrop = document.querySelector('#mobileDrawerBackdrop');
   const logoutBtn = document.querySelector('#logoutBtn');
   const selfName = document.querySelector('#selfName');
   const selfAvatar = document.querySelector('#selfAvatar');
@@ -103,6 +107,37 @@
     toast.classList.add('show');
     clearTimeout(notify.timer);
     notify.timer = setTimeout(() => toast.classList.remove('show'), 3200);
+  }
+
+  function isMobileLayout() {
+    return window.matchMedia('(max-width: 760px)').matches;
+  }
+
+  function syncMobileBackdrop() {
+    if (!mobileDrawerBackdrop) return;
+    const visible = isMobileLayout() && (channelsPanel?.classList.contains('mobile-open') || membersPanel?.classList.contains('open'));
+    mobileDrawerBackdrop.classList.toggle('open', Boolean(visible));
+  }
+
+  function openMobileChannels() {
+    if (!isMobileLayout()) return;
+    membersPanel?.classList.remove('open');
+    channelsPanel?.classList.add('mobile-open');
+    document.body.classList.add('mobile-panel-open');
+    syncMobileBackdrop();
+  }
+
+  function closeMobileChannels() {
+    channelsPanel?.classList.remove('mobile-open');
+    if (!membersPanel?.classList.contains('open')) document.body.classList.remove('mobile-panel-open');
+    syncMobileBackdrop();
+  }
+
+  function closeMobilePanels() {
+    channelsPanel?.classList.remove('mobile-open');
+    membersPanel?.classList.remove('open');
+    document.body.classList.remove('mobile-panel-open');
+    syncMobileBackdrop();
   }
 
   function initials(name) {
@@ -354,7 +389,11 @@
   }
 
   function switchTextChannel(channel) {
-    if (!channel || channel === currentChannel) return;
+    if (!channel) return;
+    if (channel === currentChannel) {
+      closeMobileChannels();
+      return;
+    }
     currentChannel = channel;
     document.querySelectorAll('.text-channel').forEach(el => {
       el.classList.toggle('active', el.dataset.channel === channel);
@@ -365,6 +404,7 @@
     document.querySelector('#channelSubtitle').textContent = subtitle;
     messageInput.placeholder = `Conversar em #${name}`;
     loadChannelHistory(channel);
+    closeMobileChannels();
   }
 
   function getParticipantVolume(identity) {
@@ -819,6 +859,7 @@
     const voiceButton = event.target.closest('.voice-channel[data-room]');
     if (voiceButton) {
       joinVoice(voiceButton.dataset.room);
+      closeMobileChannels();
     }
   });
 
@@ -1019,6 +1060,7 @@
     cameraEnabled = false;
     screenEnabled = false;
     voiceDock.classList.remove('hidden');
+    mobileChannelsToggle?.classList.add('voice-active');
     setVoiceConnectionStatus('connected');
     voiceRoomLabel.textContent = voiceRoomName(roomName);
     callStageTitle.textContent = voiceRoomName(roomName);
@@ -1535,6 +1577,7 @@
     currentVoiceRoom = null;
     micEnabled = cameraEnabled = screenEnabled = false;
     voiceDock.classList.add('hidden');
+    mobileChannelsToggle?.classList.remove('voice-active');
     setVoiceConnectionStatus('connected');
     callStage.classList.add('hidden');
     document.querySelectorAll('.voice-channel').forEach(el => el.classList.remove('connected'));
@@ -1578,14 +1621,33 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && volumePopoverIdentity) closeVolumePopover();
     if (event.key === 'Escape' && channelMenuTarget) closeChannelMenu();
+    if (event.key === 'Escape' && isMobileLayout()) closeMobilePanels();
   });
 
   window.addEventListener('resize', () => {
     closeVolumePopover();
     closeChannelMenu();
+    if (!isMobileLayout()) closeMobilePanels();
+    else syncMobileBackdrop();
   });
 
-  membersToggle.addEventListener('click', () => membersPanel.classList.toggle('open'));
+  mobileChannelsToggle?.addEventListener('click', () => {
+    if (channelsPanel?.classList.contains('mobile-open')) closeMobileChannels();
+    else openMobileChannels();
+  });
+  mobileChannelsClose?.addEventListener('click', closeMobileChannels);
+  mobileDrawerBackdrop?.addEventListener('click', closeMobilePanels);
+
+  membersToggle.addEventListener('click', () => {
+    if (isMobileLayout()) {
+      channelsPanel?.classList.remove('mobile-open');
+      membersPanel.classList.toggle('open');
+      document.body.classList.toggle('mobile-panel-open', membersPanel.classList.contains('open'));
+      syncMobileBackdrop();
+      return;
+    }
+    membersPanel.classList.toggle('open');
+  });
   logoutBtn.addEventListener('click', signOut);
   function signOut() {
     leaveVoice(false);
