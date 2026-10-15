@@ -673,3 +673,47 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 .member.offline-member .member-info strong{color:#80848e}
 .member.offline-member .member-info>span{color:#666b73}
 .member.offline-member .role-chip{filter:grayscale(1);opacity:.62}
+
+
+/* Etapa 15: instalação PWA + moderação rápida de membros */
+.install-app-btn{
+  width:calc(100% - 16px);
+  min-height:36px;
+  margin:0 8px 10px;
+  padding:0 10px;
+  border-radius:6px;
+  background:#3a3c43;
+  color:#dbdee1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  cursor:pointer;
+  border:1px solid #ffffff0b;
+  font-size:12px;
+}
+.install-app-btn:hover{background:#45474f;color:#fff}
+.install-app-btn span{font-size:17px;line-height:1;color:#aeb4ff}
+.install-app-btn strong{font-size:11px;letter-spacing:.02em}
+
+.member.banned-member{opacity:.62}
+.member.banned-member .member-info>span{color:#f08b8e}
+
+.user-role-menu-separator{height:1px;background:#2b2d31;margin:0 8px}
+.user-moderation-actions{padding:6px;display:flex;flex-direction:column;gap:2px}
+.user-moderation-actions button{
+  width:100%;min-height:34px;border-radius:5px;background:transparent;color:#dbdee1;
+  text-align:left;padding:0 9px;cursor:pointer;font-size:12px
+}
+.user-moderation-actions button:hover{background:#2b2d31;color:#fff}
+.user-moderation-actions button.warning{color:#f0b232}
+.user-moderation-actions button.warning:hover{background:#493d25;color:#ffd277}
+.user-moderation-actions button.danger{color:#f23f42}
+.user-moderation-actions button.danger:hover{background:#4a2729;color:#ffb6b8}
+
+@media(max-width:760px){
+  .install-app-btn{min-height:40px;margin-bottom:12px}
+  .user-moderation-actions button{min-height:40px}
+}
+.install-app-btn.ready{background:#3b4187;color:#fff;border-color:#5865f266}
+.install-app-btn.ready:hover{background:#4752c4}
