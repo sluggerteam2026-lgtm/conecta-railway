@@ -180,6 +180,26 @@
     return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
   }
 
+  function voiceControlIcon(type, off = false, extraClass = '') {
+    const classes = `discord-voice-icon${off ? ' is-off' : ''}${extraClass ? ` ${extraClass}` : ''}`;
+    const slash = off ? '<path class="discord-icon-slash" d="M3 3l18 18" />' : '';
+    if (type === 'headphones') {
+      return `<svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 14v-2a8 8 0 0 1 16 0v2" />
+        <path d="M4 14h3v6H5a1 1 0 0 1-1-1v-5Z" />
+        <path d="M20 14h-3v6h2a1 1 0 0 0 1-1v-5Z" />
+        ${slash}
+      </svg>`;
+    }
+    return `<svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
+      <path d="M5 11v1a7 7 0 0 0 14 0v-1" />
+      <path d="M12 19v3" />
+      <path d="M8 22h8" />
+      ${slash}
+    </svg>`;
+  }
+
   function avatarMarkup(name, avatarUrl = null, avatarId = null, extraClass = '') {
     const safeName = escapeHtml(name || '?');
     const safeId = avatarId ? ` data-avatar-id="${escapeHtml(avatarId)}"` : '';
@@ -404,23 +424,32 @@
     const users = payload?.users || [];
     const total = Number(payload?.total || 0);
     const max = Number(payload?.max || 20);
+    const onlineUsers = users.filter(user => user.online !== false);
+    const offlineUsers = users.filter(user => user.online === false);
     lastPresence = { ...payload, users, total, max };
 
     onlineCount.textContent = `${total} online`;
     membersCount.textContent = `${total} / ${max}`;
-    membersList.innerHTML = users.map(user => `
-      <div class="member${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
+
+    const memberMarkup = (user, offline = false) => `
+      <div class="member${offline ? ' offline-member' : ''}${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
         <div class="member-avatar-wrap">${avatarMarkup(user.name, user.avatarUrl, user.avatarId)}<span class="status-dot"></span></div>
         <div class="member-info">
           <div class="member-name-row"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong>${user.primaryRole ? roleChip(user.primaryRole, 'compact') : ''}</div>
-          <span>${user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'}</span>
+          <span>${offline ? 'offline' : (user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online')}</span>
         </div>
       </div>
-    `).join('');
+    `;
+
+    membersList.innerHTML = `
+      ${onlineUsers.map(user => memberMarkup(user, false)).join('')}
+      <div class="members-offline-title">OFFLINE — ${offlineUsers.length}</div>
+      <div class="offline-members-list">${offlineUsers.map(user => memberMarkup(user, true)).join('')}</div>
+    `;
 
     document.querySelectorAll('.voice-channel').forEach(button => {
       const room = button.dataset.room;
-      const people = users.filter(user => user.voiceRoom === room);
+      const people = onlineUsers.filter(user => user.voiceRoom === room);
       const count = button.querySelector('[data-count]');
       if (count) count.textContent = people.length;
 
@@ -436,8 +465,8 @@
           <span class="voice-member-avatar-wrap">${avatarMarkup(user.name, user.avatarUrl, user.avatarId, 'voice-avatar')}<span class="voice-member-dot"></span></span>
           <span class="voice-member-name">${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}${user.primaryRole ? roleChip(user.primaryRole, 'micro') : ''}</span>
           <span class="voice-member-states">
-            <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone desmutado' : 'Microfone mutado'}">${user.micEnabled ? '🎙' : '🔇'}</span>
-            <span class="voice-state-icon${user.soundEnabled ? '' : ' off'}" title="${user.soundEnabled ? 'Som da sala ligado' : 'Som da sala desligado'}">${user.soundEnabled ? '🔊' : '🔈'}</span>
+            <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone ligado' : 'Microfone mutado'}">${voiceControlIcon('mic', !user.micEnabled, 'member-control-icon')}</span>
+            <span class="voice-state-icon${user.soundEnabled ? '' : ' off'}" title="${user.soundEnabled ? 'Áudio ligado' : 'Áudio desativado'}">${voiceControlIcon('headphones', !user.soundEnabled, 'member-control-icon')}</span>
           </span>
         </div>
       `).join('');
@@ -1948,22 +1977,22 @@
   function updateControlButtons() {
     micBtn.classList.toggle('active', micEnabled);
     micBtn.classList.toggle('off', !micEnabled);
-    micBtn.textContent = micEnabled ? '🎙' : '🔇';
+    micBtn.innerHTML = voiceControlIcon('mic', !micEnabled, 'dock-voice-icon');
     micBtn.title = micEnabled ? 'Mutar microfone' : 'Desmutar microfone';
     micBtn.setAttribute('aria-label', micBtn.title);
 
     audioBtn.classList.toggle('active', roomSoundEnabled);
     audioBtn.classList.toggle('off', !roomSoundEnabled);
-    audioBtn.textContent = roomSoundEnabled ? '🔊' : '🔈';
-    audioBtn.title = roomSoundEnabled ? 'Silenciar áudio da sala' : 'Ativar áudio da sala';
+    audioBtn.innerHTML = voiceControlIcon('headphones', !roomSoundEnabled, 'dock-voice-icon');
+    audioBtn.title = roomSoundEnabled ? 'Desativar áudio da sala' : 'Ativar áudio da sala';
     audioBtn.setAttribute('aria-label', audioBtn.title);
 
     if (micStatusText) {
-      micStatusText.textContent = micEnabled ? '🎙 Microfone ligado' : '🔇 Microfone mutado';
+      micStatusText.innerHTML = `${voiceControlIcon('mic', !micEnabled, 'status-control-icon')}<span>${micEnabled ? 'Microfone ligado' : 'Microfone mutado'}</span>`;
       micStatusText.classList.toggle('off', !micEnabled);
     }
     if (soundStatusText) {
-      soundStatusText.textContent = roomSoundEnabled ? '🔊 Som ligado' : '🔈 Som desligado';
+      soundStatusText.innerHTML = `${voiceControlIcon('headphones', !roomSoundEnabled, 'status-control-icon')}<span>${roomSoundEnabled ? 'Áudio ligado' : 'Áudio desativado'}</span>`;
       soundStatusText.classList.toggle('off', !roomSoundEnabled);
     }
     if (noiseStatusText) {
