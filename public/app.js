@@ -45,6 +45,7 @@
   const createTextChannelBtn = document.querySelector('#createTextChannelBtn');
   const createVoiceChannelBtn = document.querySelector('#createVoiceChannelBtn');
   const adminSettingsBtn = document.querySelector('#adminSettingsBtn');
+  const installAppBtn = document.querySelector('#installAppBtn');
   const editProfileBtn = document.querySelector('#editProfileBtn');
 
   const channelNames = {
@@ -128,10 +129,63 @@
   let userRoleMenuUser = null;
   let userLongPressTimer = null;
   let suppressNextUserClick = false;
+  let deferredInstallPrompt = null;
   let profileModal = null;
   let pendingAvatarDataUrl = '';
   let avatarUploadBusy = false;
 
+
+
+  function isStandaloneApp() {
+    return window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  }
+
+  function syncInstallButton() {
+    if (!installAppBtn) return;
+    installAppBtn.classList.toggle('hidden', isStandaloneApp());
+    installAppBtn.classList.toggle('ready', Boolean(deferredInstallPrompt));
+  }
+
+  async function installConectaApp() {
+    if (!deferredInstallPrompt) {
+      const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      notify(isiOS
+        ? 'No Safari: toque em Compartilhar e depois em “Adicionar à Tela de Início”.'
+        : 'No Chrome/Edge, aguarde a opção de instalação aparecer ou use o menu ⋮ > Instalar Conecta.');
+      return;
+    }
+    const promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    syncInstallButton();
+    try {
+      await promptEvent.prompt();
+      const choice = await promptEvent.userChoice;
+      if (choice?.outcome === 'accepted') notify('Instalação do Conecta iniciada.');
+    } catch (error) {
+      console.error('Não foi possível abrir a instalação do APP:', error);
+      notify('Não foi possível abrir a instalação do APP neste navegador.', true);
+    }
+  }
+
+  window.addEventListener('beforeinstallprompt', event => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    syncInstallButton();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    syncInstallButton();
+    notify('Conecta instalado como APP.');
+  });
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/service-worker.js').catch(error => {
+        console.error('Service Worker do Conecta não pôde ser registrado:', error);
+      });
+    });
+  }
 
   function notify(text, isError = false) {
     toast.textContent = text;
@@ -432,11 +486,11 @@
     membersCount.textContent = `${total} / ${max}`;
 
     const memberMarkup = (user, offline = false) => `
-      <div class="member${offline ? ' offline-member' : ''}${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
+      <div class="member${offline ? ' offline-member' : ''}${user.banned ? ' banned-member' : ''}${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
         <div class="member-avatar-wrap">${avatarMarkup(user.name, user.avatarUrl, user.avatarId)}<span class="status-dot"></span></div>
         <div class="member-info">
           <div class="member-name-row"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong>${user.primaryRole ? roleChip(user.primaryRole, 'compact') : ''}</div>
-          <span>${offline ? 'offline' : (user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online')}</span>
+          <span>${user.banned ? 'banido' : (offline ? 'offline' : (user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'))}</span>
         </div>
       </div>
     `;
@@ -472,6 +526,16 @@
       `).join('');
       list.classList.toggle('hidden', people.length === 0);
     });
+
+    for (const user of onlineUsers) {
+      if (!user.livekitIdentity) continue;
+      document.querySelectorAll(`.video-tile[data-participant="${CSS.escape(user.livekitIdentity)}"]`).forEach(tile => {
+        const label = tile.querySelector('.video-label');
+        if (!label) return;
+        const mine = user.sessionId === sessionId ? ' (você)' : '';
+        label.textContent = `${user.name}${mine}${tile.classList.contains('screen') ? ' • tela' : ''}`;
+      });
+    }
   }
 
   async function loadChannels({ loadHistory = false } = {}) {
@@ -1052,6 +1116,43 @@
       }
       adminMembers = adminMembers.map(member => member.avatarId === avatarId ? { ...member, avatarUrl: avatarUrl || null } : member);
       updateAvatarNodes(avatarId, avatarUrl || null);
+    });
+
+
+    socket.on('nickname-changed', ({ name } = {}) => {
+      const clean = String(name || '').trim();
+      if (!clean) return;
+      profileName = clean;
+      currentUser.name = clean;
+      selfName.textContent = clean;
+      sessionStorage.setItem('conecta.name', clean);
+      localStorage.setItem(SAVED_NAME_KEY, clean);
+      nameInput.value = clean;
+      setAvatarNode(selfAvatar, clean, currentUser.avatarUrl, currentUser.avatarId);
+      if (Array.isArray(lastPresence?.users)) {
+        lastPresence.users = lastPresence.users.map(user => user.userKey === currentUser.userKey ? { ...user, name: clean } : user);
+        renderPresence(lastPresence);
+      }
+      adminMembers = adminMembers.map(member => member.userKey === currentUser.userKey ? { ...member, name: clean } : member);
+      refreshLocalVideo();
+      notify(`Seu nick foi alterado para ${clean}.`);
+    });
+
+    socket.on('moderation-action', async ({ action, message } = {}) => {
+      socketEverConnected = false;
+      socketRecovering = false;
+      try { await leaveVoice(false); } catch {}
+      try { socket?.disconnect(); } catch {}
+      sessionStorage.removeItem('conecta.sessionId');
+      sessionStorage.removeItem('conecta.name');
+      localStorage.removeItem(SAVED_NAME_KEY);
+      sessionId = '';
+      profileName = '';
+      currentUser = { ...currentUser, name: '', userKey, roles: [], isAdmin: false, isMaster: false };
+      app.classList.add('hidden');
+      landing.classList.remove('hidden');
+      nameInput.value = '';
+      notify(message || (action === 'ban' ? 'Você foi banido do Conecta.' : 'Você foi desconectado do Conecta.'), true);
     });
 
     socket.on('voice-access-revoked', ({ room } = {}) => {
@@ -2083,6 +2184,52 @@
     });
   }
 
+
+  async function changeMemberNickname(user) {
+    if (!user?.userKey) return;
+    const nextName = window.prompt('Novo nick:', user.name || '');
+    if (!nextName?.trim() || nextName.trim() === user.name) return;
+    const data = await api(`/api/admin/members/${encodeURIComponent(user.userKey)}/nickname`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: nextName }),
+    });
+    user.name = data.name || nextName.trim();
+    notify('Nick atualizado sem trocar o usuário vinculado.');
+    closeUserRoleMenu();
+  }
+
+  async function disconnectMember(user) {
+    if (!user?.userKey || user.online === false) return;
+    if (!window.confirm(`Desconectar "${user.name}" do Conecta agora?`)) return;
+    await api(`/api/admin/members/${encodeURIComponent(user.userKey)}/disconnect`, { method: 'POST', body: '{}' });
+    notify('Usuário desconectado. Ele poderá entrar novamente.');
+    closeUserRoleMenu();
+  }
+
+  async function toggleMemberBan(user) {
+    if (!user?.userKey) return;
+    if (user.banned) {
+      if (!window.confirm(`Desbanir "${user.name}"?`)) return;
+      await api(`/api/admin/members/${encodeURIComponent(user.userKey)}/ban`, { method: 'DELETE' });
+      user.banned = false;
+      notify('Usuário desbanido.');
+    } else {
+      if (!window.confirm(`Banir "${user.name}"?\nEle será desconectado e não conseguirá entrar até ser desbanido.`)) return;
+      await api(`/api/admin/members/${encodeURIComponent(user.userKey)}/ban`, { method: 'POST', body: '{}' });
+      user.banned = true;
+      notify('Usuário banido.');
+    }
+    closeUserRoleMenu();
+  }
+
+  async function deleteMember(user) {
+    if (!user?.userKey) return;
+    if (!window.confirm(`Excluir o usuário "${user.name}"?\n\nOs cargos e o perfil serão removidos. As mensagens antigas continuam no histórico. Se ele entrar novamente depois, será criado como um usuário novo sem cargos.`)) return;
+    await api(`/api/admin/members/${encodeURIComponent(user.userKey)}`, { method: 'DELETE' });
+    notify('Usuário excluído do Conecta.');
+    closeUserRoleMenu();
+  }
+
   async function openUserRoleMenu(user, clientX, clientY) {
     if (!user?.userKey || !hasPermission('manage_members')) return;
     try {
@@ -2094,10 +2241,12 @@
       }
       userRoleMenuUser = user;
       const selected = new Set(user.roleIds || []);
+      const isSelf = user.userKey === currentUser.userKey;
+      const protectedUser = Boolean(user.isMaster);
       userRoleMenu.innerHTML = `
         <div class="user-role-menu-head">
           <strong>${escapeHtml(user.name)}</strong>
-          <small>${user.isMaster ? 'ADM Master • protegido' : 'Marque ou desmarque cargos'}</small>
+          <small>${protectedUser ? 'ADM Master • protegido' : (user.banned ? 'Usuário banido' : 'Cargos e moderação')}</small>
         </div>
         <div class="user-role-menu-list">
           ${adminRoles.map(role => `
@@ -2110,6 +2259,15 @@
           `).join('') || '<div class="admin-empty">Nenhum cargo criado.</div>'}
         </div>
         <button type="button" class="role-menu-manage">⚙ Abrir gerenciamento</button>
+        ${protectedUser ? '' : `
+          <div class="user-role-menu-separator"></div>
+          <div class="user-moderation-actions">
+            <button type="button" data-user-rename>✎ Trocar nick</button>
+            ${!isSelf && user.online !== false ? '<button type="button" data-user-disconnect>↪ Desconectar</button>' : ''}
+            ${!isSelf ? `<button type="button" class="${user.banned ? '' : 'warning'}" data-user-ban>${user.banned ? '✓ Desbanir' : '⛔ Banir'}</button>` : ''}
+            ${!isSelf ? '<button type="button" class="danger" data-user-delete>🗑 Excluir usuário</button>' : ''}
+          </div>
+        `}
       `;
 
       userRoleMenu.querySelectorAll('input[type="checkbox"]').forEach(input => {
@@ -2132,6 +2290,10 @@
         closeUserRoleMenu();
         openAdminPanel('members', user.userKey);
       });
+      userRoleMenu.querySelector('[data-user-rename]')?.addEventListener('click', () => changeMemberNickname(user).catch(error => notify(error.message || 'Não foi possível trocar o nick.', true)));
+      userRoleMenu.querySelector('[data-user-disconnect]')?.addEventListener('click', () => disconnectMember(user).catch(error => notify(error.message || 'Não foi possível desconectar.', true)));
+      userRoleMenu.querySelector('[data-user-ban]')?.addEventListener('click', () => toggleMemberBan(user).catch(error => notify(error.message || 'Não foi possível alterar o banimento.', true)));
+      userRoleMenu.querySelector('[data-user-delete]')?.addEventListener('click', () => deleteMember(user).catch(error => notify(error.message || 'Não foi possível excluir o usuário.', true)));
 
       userRoleMenu.classList.remove('hidden');
       const rect = userRoleMenu.getBoundingClientRect();
@@ -2315,7 +2477,7 @@
             ${adminMembers.map(member => `
               <button type="button" class="admin-member-item${member.userKey === adminSelectedMemberKey ? ' active' : ''}" data-member-key="${escapeHtml(member.userKey)}">
                 ${avatarMarkup(member.name, member.avatarUrl, member.avatarId)}
-                <span><strong>${escapeHtml(member.name)}</strong><small>${member.isMaster ? 'ADM Master' : member.roles?.length ? member.roles.map(r => r.name).join(', ') : 'Sem cargo'}</small></span>
+                <span><strong>${escapeHtml(member.name)}</strong><small>${member.isMaster ? 'ADM Master' : member.banned ? 'BANIDO' : member.roles?.length ? member.roles.map(r => r.name).join(', ') : 'Sem cargo'}</small></span>
               </button>
             `).join('') || '<div class="admin-empty">Nenhum membro cadastrado.</div>'}
           </div>
@@ -2640,6 +2802,9 @@
     clearTimeout(userLongPressTimer);
     userLongPressTimer = null;
   }, { passive: true }));
+
+  installAppBtn?.addEventListener('click', installConectaApp);
+  syncInstallButton();
 
   editProfileBtn?.addEventListener('click', openProfileModal);
   selfAvatar?.addEventListener('click', openProfileModal);
