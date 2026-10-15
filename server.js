@@ -344,7 +344,7 @@ async function buildPublicUsersForViewer(viewerSession) {
   const onlineUserKeys = new Set(entries.map(([sessionId]) => sessions.get(sessionId)?.userKey).filter(Boolean));
 
   const profilesResult = await pool.query(`
-    SELECT user_key, name, is_master, public_id, avatar_version,
+    SELECT user_key, name, is_master, banned, public_id, avatar_version,
            avatar_data IS NOT NULL AS has_avatar, updated_at
     FROM profiles
     ORDER BY is_master DESC, updated_at DESC, name ASC
@@ -369,6 +369,7 @@ async function buildPublicUsersForViewer(viewerSession) {
     userKey: row.user_key,
     name: row.name,
     isMaster: Boolean(row.is_master),
+    banned: Boolean(row.banned),
     avatarId: row.public_id ? String(row.public_id) : null,
     avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
   }]));
@@ -391,7 +392,8 @@ async function buildPublicUsersForViewer(viewerSession) {
       socketId,
       name: session.name,
       online: true,
-      livekitIdentity: `${session.name}-${sessionId.slice(0, 8)}`,
+      banned: Boolean(profile.banned),
+      livekitIdentity: session.livekitIdentity || `conecta-${sessionId.slice(0, 12)}`,
       voiceRoom: state?.room && visibleVoice.has(state.room) ? state.room : null,
       micEnabled: Boolean(state?.micEnabled),
       soundEnabled: state?.soundEnabled !== false,
@@ -417,6 +419,7 @@ async function buildPublicUsersForViewer(viewerSession) {
       socketId: null,
       name: profile.name,
       online: false,
+      banned: Boolean(profile.banned),
       livekitIdentity: null,
       voiceRoom: null,
       micEnabled: false,
@@ -565,6 +568,8 @@ async function initDatabase() {
   await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_data BYTEA`);
   await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_mime VARCHAR(32)`);
   await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_version BIGINT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ NULL`);
   const profilesWithoutPublicId = await pool.query(`SELECT user_key FROM profiles WHERE public_id IS NULL`);
   for (const row of profilesWithoutPublicId.rows) {
     await pool.query(`UPDATE profiles SET public_id = $1 WHERE user_key = $2 AND public_id IS NULL`, [crypto.randomUUID(), row.user_key]);
@@ -636,6 +641,11 @@ app.post('/api/login', async (req, res) => {
     if (onlineSessionsCount() >= MAX_USERS) return res.status(429).json({ error: `A sala atingiu o limite de ${MAX_USERS} pessoas.` });
 
     const userKey = cleanUserKey(req.body?.userKey);
+    const existingProfile = await pool.query(`SELECT banned FROM profiles WHERE user_key = $1 LIMIT 1`, [userKey]);
+    if (existingProfile.rows[0]?.banned) {
+      return res.status(403).json({ error: 'Este usuário foi banido do Conecta.' });
+    }
+
     const masterKey = await getMasterUserKey();
     if (masterKey && masterKey === userKey) name = MASTER_NAME;
     const wantsMasterName = name.localeCompare(MASTER_NAME, 'pt-BR', { sensitivity: 'accent' }) === 0;
@@ -657,7 +667,17 @@ app.post('/api/login', async (req, res) => {
     await pool.query(`UPDATE profiles SET public_id = $2 WHERE user_key = $1 AND public_id IS NULL`, [userKey, crypto.randomUUID()]);
 
     const sessionId = crypto.randomUUID();
-    const session = { name, userKey, createdAt: Date.now(), lastSeen: Date.now(), isMaster: false, isAdmin: false, avatarId: null, avatarUrl: null };
+    const session = {
+      name,
+      userKey,
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+      isMaster: false,
+      isAdmin: false,
+      avatarId: null,
+      avatarUrl: null,
+      livekitIdentity: `conecta-${sessionId.slice(0, 12)}`,
+    };
     await syncSessionPresentation(session);
     const access = await getUserAccess(session);
     session.isMaster = access.isMaster;
@@ -991,7 +1011,8 @@ app.post('/api/livekit-token', async (req, res) => {
       ? { ...access.permissions, join_voice: true, speak: true, camera: true, screen_share: true }
       : access.permissions;
 
-    const identity = `${auth.session.name}-${auth.token.slice(0, 8)}`;
+    const identity = auth.session.livekitIdentity || `conecta-${auth.token.slice(0, 12)}`;
+    auth.session.livekitIdentity = identity;
     const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity, name: auth.session.name, ttl: '15m' });
     token.addGrant({
       roomJoin: true,
@@ -1108,7 +1129,7 @@ app.get('/api/admin/members', async (req, res) => {
     if (!(await canManage(auth.session, 'manage_members'))) return res.status(403).json({ error: 'Sem permissão para gerenciar membros.' });
 
     const result = await pool.query(`
-      SELECT p.user_key, p.name, p.is_master, p.updated_at, p.public_id, p.avatar_version,
+      SELECT p.user_key, p.name, p.is_master, p.banned, p.updated_at, p.public_id, p.avatar_version,
              (p.avatar_data IS NOT NULL) AS has_avatar,
              COALESCE(
                json_agg(json_build_object('id', r.id, 'name', r.name, 'color', r.color, 'systemKey', r.system_key)
@@ -1126,6 +1147,7 @@ app.get('/api/admin/members', async (req, res) => {
       userKey: row.user_key,
       name: row.name,
       isMaster: Boolean(row.is_master),
+      banned: Boolean(row.banned),
       roles: row.roles || [],
       avatarId: row.public_id ? String(row.public_id) : null,
       avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
@@ -1186,6 +1208,143 @@ app.put('/api/admin/members/:userKey/roles', async (req, res) => {
   }
 });
 
+
+
+async function requireModerationTarget(req, res, { allowSelf = false } = {}) {
+  const auth = getSession(req);
+  if (!auth) {
+    res.status(401).json({ error: 'Sessão inválida.' });
+    return null;
+  }
+  if (!(await canManage(auth.session, 'manage_members'))) {
+    res.status(403).json({ error: 'Sem permissão para gerenciar membros.' });
+    return null;
+  }
+  const targetUserKey = String(req.params.userKey || '').slice(0, 128);
+  const result = await pool.query(`SELECT user_key, name, is_master, banned FROM profiles WHERE user_key = $1 LIMIT 1`, [targetUserKey]);
+  if (!result.rowCount) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return null;
+  }
+  const target = result.rows[0];
+  if (target.is_master) {
+    res.status(403).json({ error: 'O ADM Master é protegido e não pode sofrer esta ação.' });
+    return null;
+  }
+  if (!allowSelf && targetUserKey === auth.session.userKey) {
+    res.status(400).json({ error: 'Você não pode aplicar esta ação em si mesmo.' });
+    return null;
+  }
+  return { auth, targetUserKey, target };
+}
+
+async function disconnectUserSessions(userKey, payload) {
+  const targets = [...sessions.entries()].filter(([, session]) => session.userKey === userKey);
+  for (const [targetSessionId] of targets) {
+    voiceState.delete(targetSessionId);
+    const socketId = socketsBySession.get(targetSessionId);
+    const targetSocket = socketId ? io.sockets.sockets.get(socketId) : null;
+    if (targetSocket) {
+      targetSocket.emit('moderation-action', payload);
+      setTimeout(() => {
+        try { targetSocket.disconnect(true); } catch {}
+      }, 180);
+    }
+    socketsBySession.delete(targetSessionId);
+    sessions.delete(targetSessionId);
+  }
+  await emitPresence();
+}
+
+app.patch('/api/admin/members/:userKey/nickname', async (req, res) => {
+  try {
+    const targetInfo = await requireModerationTarget(req, res, { allowSelf: true });
+    if (!targetInfo) return;
+    const name = cleanName(req.body?.name);
+    if (!name || name.length < 2) return res.status(400).json({ error: 'Use um nick com pelo menos 2 caracteres.' });
+    if (name.localeCompare(MASTER_NAME, 'pt-BR', { sensitivity: 'accent' }) === 0) {
+      return res.status(400).json({ error: 'Esse nick é reservado ao ADM Master.' });
+    }
+
+    await pool.query(`UPDATE profiles SET name = $1, updated_at = NOW() WHERE user_key = $2`, [name, targetInfo.targetUserKey]);
+    for (const [targetSessionId, session] of sessions.entries()) {
+      if (session.userKey !== targetInfo.targetUserKey) continue;
+      session.name = name;
+      const socketId = socketsBySession.get(targetSessionId);
+      const targetSocket = socketId ? io.sockets.sockets.get(socketId) : null;
+      if (targetSocket) {
+        targetSocket.data.name = name;
+        targetSocket.emit('nickname-changed', { name });
+      }
+    }
+    await emitPresence();
+    res.json({ ok: true, name });
+  } catch (error) {
+    console.error('Erro ao trocar nick:', error);
+    res.status(500).json({ error: 'Não foi possível trocar o nick.' });
+  }
+});
+
+app.post('/api/admin/members/:userKey/disconnect', async (req, res) => {
+  try {
+    const targetInfo = await requireModerationTarget(req, res);
+    if (!targetInfo) return;
+    await disconnectUserSessions(targetInfo.targetUserKey, {
+      action: 'disconnect',
+      message: 'Você foi desconectado por um administrador.'
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao desconectar usuário:', error);
+    res.status(500).json({ error: 'Não foi possível desconectar o usuário.' });
+  }
+});
+
+app.post('/api/admin/members/:userKey/ban', async (req, res) => {
+  try {
+    const targetInfo = await requireModerationTarget(req, res);
+    if (!targetInfo) return;
+    await pool.query(`UPDATE profiles SET banned = TRUE, banned_at = NOW(), updated_at = NOW() WHERE user_key = $1`, [targetInfo.targetUserKey]);
+    await disconnectUserSessions(targetInfo.targetUserKey, {
+      action: 'ban',
+      message: 'Você foi banido do Conecta por um administrador.'
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao banir usuário:', error);
+    res.status(500).json({ error: 'Não foi possível banir o usuário.' });
+  }
+});
+
+app.delete('/api/admin/members/:userKey/ban', async (req, res) => {
+  try {
+    const targetInfo = await requireModerationTarget(req, res, { allowSelf: true });
+    if (!targetInfo) return;
+    await pool.query(`UPDATE profiles SET banned = FALSE, banned_at = NULL, updated_at = NOW() WHERE user_key = $1`, [targetInfo.targetUserKey]);
+    await emitPresence();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao desbanir usuário:', error);
+    res.status(500).json({ error: 'Não foi possível desbanir o usuário.' });
+  }
+});
+
+app.delete('/api/admin/members/:userKey', async (req, res) => {
+  try {
+    const targetInfo = await requireModerationTarget(req, res);
+    if (!targetInfo) return;
+    await disconnectUserSessions(targetInfo.targetUserKey, {
+      action: 'delete',
+      message: 'Seu usuário foi removido do Conecta por um administrador.'
+    });
+    await pool.query(`DELETE FROM profiles WHERE user_key = $1`, [targetInfo.targetUserKey]);
+    await emitPresence();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao excluir usuário:', error);
+    res.status(500).json({ error: 'Não foi possível excluir o usuário.' });
+  }
+});
 
 app.delete('/api/admin/members/:userKey/avatar', async (req, res) => {
   try {
@@ -1340,15 +1499,16 @@ io.on('connection', async socket => {
 
       const text = cleanMessage(payload.text);
       if (!text) return;
+      const displayName = session.name;
       const id = crypto.randomUUID();
       const createdAt = new Date();
       await pool.query(`
         INSERT INTO messages (id, channel, author_key, author_name, body, created_at)
         VALUES ($1, $2, $3, $4, $5, $6)
-      `, [id, channel, userKey, name, text, createdAt]);
+      `, [id, channel, userKey, displayName, text, createdAt]);
 
       const message = {
-        id, channel, name, text, ts: createdAt.getTime(), editedAt: null,
+        id, channel, name: displayName, text, ts: createdAt.getTime(), editedAt: null,
         avatarId: session.avatarId || null,
         avatarUrl: session.avatarUrl || null,
       };
