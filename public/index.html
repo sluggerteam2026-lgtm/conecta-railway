@@ -4,7 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1e1f22" />
+  <meta name="application-name" content="Conecta" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Conecta • sua turma, por perto</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/conecta-192.png" />
+  <link rel="apple-touch-icon" href="/icons/conecta-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -155,6 +161,9 @@
 
     <aside id="membersPanel" class="members-panel">
       <div class="members-head"><strong>Membros</strong><span id="membersCount">1 / 20</span></div>
+      <button id="installAppBtn" class="install-app-btn hidden" type="button" title="Instalar o Conecta no computador">
+        <span aria-hidden="true">↓</span><strong>Instalar APP</strong>
+      </button>
       <h3>ONLINE</h3>
       <div id="membersList" class="members-list"></div>
     </aside>
