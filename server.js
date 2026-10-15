@@ -341,37 +341,41 @@ async function buildPublicUsersForViewer(viewerSession) {
   const visibleVoice = new Set(channels.filter(channel => channel.type === 'voice').map(channel => channel.slug));
 
   const entries = [...socketsBySession.entries()];
-  const userKeys = [...new Set(entries.map(([sessionId]) => sessions.get(sessionId)?.userKey).filter(Boolean))];
+  const onlineUserKeys = new Set(entries.map(([sessionId]) => sessions.get(sessionId)?.userKey).filter(Boolean));
+
+  const profilesResult = await pool.query(`
+    SELECT user_key, name, is_master, public_id, avatar_version,
+           avatar_data IS NOT NULL AS has_avatar, updated_at
+    FROM profiles
+    ORDER BY is_master DESC, updated_at DESC, name ASC
+  `);
+  const allUserKeys = profilesResult.rows.map(row => row.user_key);
+
   const roleMap = new Map();
-  if (userKeys.length) {
+  if (allUserKeys.length) {
     const result = await pool.query(`
       SELECT ur.user_key, r.id, r.name, r.color, r.system_key, r.created_at
       FROM user_roles ur JOIN roles r ON r.id = ur.role_id
       WHERE ur.user_key = ANY($1::varchar[])
       ORDER BY CASE WHEN r.system_key = 'admin' THEN 0 ELSE 1 END, r.created_at ASC
-    `, [userKeys]);
+    `, [allUserKeys]);
     for (const row of result.rows) {
       if (!roleMap.has(row.user_key)) roleMap.set(row.user_key, []);
       roleMap.get(row.user_key).push({ id: row.id, name: row.name, color: row.color, systemKey: row.system_key || null });
     }
   }
 
-  const profileMap = new Map();
-  if (userKeys.length) {
-    const result = await pool.query(`
-      SELECT user_key, public_id, avatar_version, avatar_data IS NOT NULL AS has_avatar
-      FROM profiles WHERE user_key = ANY($1::varchar[])
-    `, [userKeys]);
-    for (const row of result.rows) {
-      profileMap.set(row.user_key, {
-        avatarId: row.public_id ? String(row.public_id) : null,
-        avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
-      });
-    }
-  }
+  const profileMap = new Map(profilesResult.rows.map(row => [row.user_key, {
+    userKey: row.user_key,
+    name: row.name,
+    isMaster: Boolean(row.is_master),
+    avatarId: row.public_id ? String(row.public_id) : null,
+    avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
+  }]));
 
   const masterKey = await getMasterUserKey();
   const users = [];
+
   for (const [sessionId, socketId] of entries) {
     const session = sessions.get(sessionId);
     if (!session) continue;
@@ -381,10 +385,12 @@ async function buildPublicUsersForViewer(viewerSession) {
     const displayRoles = isMaster
       ? [{ id: 'master', name: 'ADM MASTER', color: '#F0B232', systemKey: 'master' }, ...roles]
       : roles;
+    const profile = profileMap.get(session.userKey) || {};
     users.push({
       sessionId,
       socketId,
       name: session.name,
+      online: true,
       livekitIdentity: `${session.name}-${sessionId.slice(0, 8)}`,
       voiceRoom: state?.room && visibleVoice.has(state.room) ? state.room : null,
       micEnabled: Boolean(state?.micEnabled),
@@ -393,12 +399,43 @@ async function buildPublicUsersForViewer(viewerSession) {
       roleIds: roles.map(role => role.id),
       primaryRole: displayRoles[0] || null,
       isMaster,
-      avatarId: profileMap.get(session.userKey)?.avatarId || null,
-      avatarUrl: profileMap.get(session.userKey)?.avatarUrl || null,
+      avatarId: profile.avatarId || null,
+      avatarUrl: profile.avatarUrl || null,
       ...(canManageMembers ? { userKey: session.userKey } : {}),
     });
   }
-  return users.sort((a, b) => a.isMaster !== b.isMaster ? (a.isMaster ? -1 : 1) : a.name.localeCompare(b.name, 'pt-BR'));
+
+  for (const profile of profilesResult.rows) {
+    if (onlineUserKeys.has(profile.user_key)) continue;
+    const roles = roleMap.get(profile.user_key) || [];
+    const isMaster = profile.user_key === masterKey || Boolean(profile.is_master);
+    const displayRoles = isMaster
+      ? [{ id: 'master', name: 'ADM MASTER', color: '#F0B232', systemKey: 'master' }, ...roles]
+      : roles;
+    users.push({
+      sessionId: null,
+      socketId: null,
+      name: profile.name,
+      online: false,
+      livekitIdentity: null,
+      voiceRoom: null,
+      micEnabled: false,
+      soundEnabled: false,
+      roles: displayRoles,
+      roleIds: roles.map(role => role.id),
+      primaryRole: displayRoles[0] || null,
+      isMaster,
+      avatarId: profile.public_id ? String(profile.public_id) : null,
+      avatarUrl: avatarUrl(profile.public_id, profile.avatar_version, profile.has_avatar),
+      ...(canManageMembers ? { userKey: profile.user_key } : {}),
+    });
+  }
+
+  return users.sort((a, b) => {
+    if (a.online !== b.online) return a.online ? -1 : 1;
+    if (a.isMaster !== b.isMaster) return a.isMaster ? -1 : 1;
+    return a.name.localeCompare(b.name, 'pt-BR');
+  });
 }
 
 async function emitPresence() {
