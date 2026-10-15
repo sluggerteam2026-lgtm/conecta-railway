@@ -45,6 +45,7 @@
   const createTextChannelBtn = document.querySelector('#createTextChannelBtn');
   const createVoiceChannelBtn = document.querySelector('#createVoiceChannelBtn');
   const adminSettingsBtn = document.querySelector('#adminSettingsBtn');
+  const editProfileBtn = document.querySelector('#editProfileBtn');
 
   const channelNames = {
     geral: ['geral', 'O papo principal da turma'],
@@ -109,6 +110,8 @@
     isMaster: false,
     isAdmin: false,
     roles: [],
+    avatarId: null,
+    avatarUrl: null,
     permissions: {
       send_messages: false, join_voice: false, speak: false, camera: false, screen_share: false,
       manage_channels: false, manage_roles: false, manage_members: false,
@@ -125,6 +128,9 @@
   let userRoleMenuUser = null;
   let userLongPressTimer = null;
   let suppressNextUserClick = false;
+  let profileModal = null;
+  let pendingAvatarDataUrl = '';
+  let avatarUploadBusy = false;
 
 
   function notify(text, isError = false) {
@@ -174,6 +180,41 @@
     return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
   }
 
+  function avatarMarkup(name, avatarUrl = null, avatarId = null, extraClass = '') {
+    const safeName = escapeHtml(name || '?');
+    const safeId = avatarId ? ` data-avatar-id="${escapeHtml(avatarId)}"` : '';
+    const safeAvatarName = ` data-avatar-name="${safeName}"`;
+    const classes = `avatar${avatarUrl ? ' has-photo' : ''}${extraClass ? ` ${extraClass}` : ''}`;
+    return `<div class="${classes}"${safeId}${safeAvatarName}>${avatarUrl
+      ? `<img src="${escapeHtml(avatarUrl)}" alt="" loading="lazy" draggable="false" />`
+      : escapeHtml(initials(name))}</div>`;
+  }
+
+  function setAvatarNode(node, name, avatarUrl = null, avatarId = null) {
+    if (!node) return;
+    node.dataset.avatarName = String(name || '?');
+    if (avatarId) node.dataset.avatarId = avatarId;
+    else delete node.dataset.avatarId;
+    node.classList.toggle('has-photo', Boolean(avatarUrl));
+    node.innerHTML = '';
+    if (avatarUrl) {
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      img.draggable = false;
+      node.appendChild(img);
+    } else {
+      node.textContent = initials(name);
+    }
+  }
+
+  function updateAvatarNodes(avatarId, avatarUrl) {
+    if (!avatarId) return;
+    document.querySelectorAll(`.avatar[data-avatar-id="${CSS.escape(avatarId)}"]`).forEach(node => {
+      setAvatarNode(node, node.dataset.avatarName || '?', avatarUrl, avatarId);
+    });
+  }
+
   function ensureUserKey() {
     if (userKey) return userKey;
     if (window.crypto?.randomUUID) {
@@ -221,8 +262,8 @@
     if (me.name) {
       profileName = me.name;
       selfName.textContent = profileName;
-      selfAvatar.textContent = initials(profileName);
     }
+    setAvatarNode(selfAvatar, profileName, currentUser.avatarUrl, currentUser.avatarId);
     updatePermissionUi();
     renderChannels();
     renderPresence(lastPresence);
@@ -369,7 +410,7 @@
     membersCount.textContent = `${total} / ${max}`;
     membersList.innerHTML = users.map(user => `
       <div class="member${user.userKey ? ' manageable-user' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
-        <div class="member-avatar-wrap"><div class="avatar">${escapeHtml(initials(user.name))}</div><span class="status-dot"></span></div>
+        <div class="member-avatar-wrap">${avatarMarkup(user.name, user.avatarUrl, user.avatarId)}<span class="status-dot"></span></div>
         <div class="member-info">
           <div class="member-name-row"><strong>${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}</strong>${user.primaryRole ? roleChip(user.primaryRole, 'compact') : ''}</div>
           <span>${user.voiceRoom ? `em ${escapeHtml(voiceRoomName(user.voiceRoom))}` : 'online'}</span>
@@ -392,7 +433,7 @@
 
       list.innerHTML = people.map(user => `
         <div class="voice-member${user.sessionId !== sessionId && user.livekitIdentity ? ' volume-user' : ''}${user.userKey ? ' manageable-user' : ''}" title="${escapeHtml(user.name)}${user.sessionId !== sessionId && user.livekitIdentity ? ' • clique para ajustar volume' : ''}"${user.livekitIdentity ? ` data-participant="${escapeHtml(user.livekitIdentity)}" data-name="${escapeHtml(user.name)}"` : ''}${user.userKey ? ` data-user-key="${escapeHtml(user.userKey)}" data-user-name="${escapeHtml(user.name)}"` : ''}>
-          <span class="voice-member-dot"></span>
+          <span class="voice-member-avatar-wrap">${avatarMarkup(user.name, user.avatarUrl, user.avatarId, 'voice-avatar')}<span class="voice-member-dot"></span></span>
           <span class="voice-member-name">${escapeHtml(user.name)}${user.sessionId === sessionId ? ' (você)' : ''}${user.primaryRole ? roleChip(user.primaryRole, 'micro') : ''}</span>
           <span class="voice-member-states">
             <span class="voice-state-icon${user.micEnabled ? '' : ' off'}" title="${user.micEnabled ? 'Microfone desmutado' : 'Microfone mutado'}">${user.micEnabled ? '🎙' : '🔇'}</span>
@@ -876,7 +917,7 @@
     landing.classList.add('hidden');
     app.classList.remove('hidden');
     selfName.textContent = profileName;
-    selfAvatar.textContent = initials(profileName);
+    setAvatarNode(selfAvatar, profileName, currentUser.avatarUrl, currentUser.avatarId);
     connectSocket();
     refreshMe();
     loadChannels({ loadHistory: true });
@@ -968,6 +1009,20 @@
       if (me) applyMe(me);
       if (Array.isArray(channels)) applyChannelCatalog(channels);
       renderPresence(lastPresence);
+    });
+
+    socket.on('avatar-updated', ({ avatarId, avatarUrl } = {}) => {
+      if (!avatarId) return;
+      if (currentUser.avatarId === avatarId) {
+        currentUser.avatarUrl = avatarUrl || null;
+        setAvatarNode(selfAvatar, profileName, currentUser.avatarUrl, currentUser.avatarId);
+      }
+      if (Array.isArray(lastPresence?.users)) {
+        lastPresence.users = lastPresence.users.map(user => user.avatarId === avatarId ? { ...user, avatarUrl: avatarUrl || null } : user);
+        renderPresence(lastPresence);
+      }
+      adminMembers = adminMembers.map(member => member.avatarId === avatarId ? { ...member, avatarUrl: avatarUrl || null } : member);
+      updateAvatarNodes(avatarId, avatarUrl || null);
     });
 
     socket.on('voice-access-revoked', ({ room } = {}) => {
@@ -1092,7 +1147,7 @@
 
     const time = new Date(msg.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     div.innerHTML = `
-      <div class="avatar">${escapeHtml(initials(msg.name))}</div>
+      ${avatarMarkup(msg.name, msg.avatarUrl, msg.avatarId)}
       <div class="message-content">
         <div class="message-head">
           <strong>${escapeHtml(msg.name)}</strong>
@@ -2230,7 +2285,7 @@
           <div class="admin-member-list">
             ${adminMembers.map(member => `
               <button type="button" class="admin-member-item${member.userKey === adminSelectedMemberKey ? ' active' : ''}" data-member-key="${escapeHtml(member.userKey)}">
-                <span class="avatar">${escapeHtml(initials(member.name))}</span>
+                ${avatarMarkup(member.name, member.avatarUrl, member.avatarId)}
                 <span><strong>${escapeHtml(member.name)}</strong><small>${member.isMaster ? 'ADM Master' : member.roles?.length ? member.roles.map(r => r.name).join(', ') : 'Sem cargo'}</small></span>
               </button>
             `).join('') || '<div class="admin-empty">Nenhum membro cadastrado.</div>'}
@@ -2238,7 +2293,7 @@
         </aside>
         <section class="admin-editor-pane">
           ${selected ? `
-            <div class="admin-editor-title"><div><h3>${escapeHtml(selected.name)}</h3><p>${selected.isMaster ? 'ADM Master permanente. Os cargos adicionais podem ser alterados abaixo.' : 'Marque os cargos que este membro deve ter.'}</p></div>${selected.isMaster ? '<span class="protected-pill master">MASTER</span>' : ''}</div>
+            <div class="admin-editor-title admin-member-editor-title"><div class="admin-member-identity">${avatarMarkup(selected.name, selected.avatarUrl, selected.avatarId, 'admin-avatar')}<div><h3>${escapeHtml(selected.name)}</h3><p>${selected.isMaster ? 'ADM Master permanente. Os cargos adicionais podem ser alterados abaixo.' : 'Marque os cargos que este membro deve ter.'}</p></div></div>${selected.isMaster ? '<span class="protected-pill master">MASTER</span>' : ''}</div>
             <div class="admin-member-role-grid">
               ${adminRoles.map(role => `
                 <label class="admin-role-toggle">
@@ -2248,7 +2303,10 @@
                 </label>
               `).join('')}
             </div>
-            <div class="admin-editor-actions"><button type="button" class="admin-save" data-save-member-roles>Salvar cargos</button></div>
+            <div class="admin-editor-actions">
+              <button type="button" class="admin-save" data-save-member-roles>Salvar cargos</button>
+              ${selected.avatarUrl ? '<button type="button" class="admin-danger secondary" data-remove-member-avatar>Remover foto</button>' : ''}
+            </div>
           ` : '<div class="admin-empty">Selecione um membro.</div>'}
         </section>
       </div>
@@ -2261,6 +2319,12 @@
       const roleIds = [...body.querySelectorAll('.admin-member-role-grid input:checked')].map(input => input.value);
       await setMemberRoles(selected.userKey, roleIds);
       notify('Cargos do membro atualizados.');
+      await renderAdminMembers();
+    });
+    body.querySelector('[data-remove-member-avatar]')?.addEventListener('click', async () => {
+      if (!window.confirm(`Remover a foto de perfil de "${selected.name}"?`)) return;
+      await api(`/api/admin/members/${encodeURIComponent(selected.userKey)}/avatar`, { method: 'DELETE' });
+      notify('Foto de perfil removida.');
       await renderAdminMembers();
     });
   }
@@ -2302,6 +2366,168 @@
     });
   }
 
+
+  function ensureProfileModal() {
+    if (profileModal) return profileModal;
+    const wrap = document.createElement('div');
+    wrap.className = 'profile-modal-backdrop hidden';
+    wrap.innerHTML = `
+      <section class="profile-modal" role="dialog" aria-modal="true" aria-label="Editar perfil">
+        <header class="profile-modal-head">
+          <div><strong>Editar perfil</strong><small>Foto de perfil do Conecta</small></div>
+          <button type="button" data-profile-close aria-label="Fechar">×</button>
+        </header>
+        <div class="profile-modal-body">
+          <div class="profile-avatar-area">
+            <div data-profile-preview class="avatar profile-avatar-preview"></div>
+            <div class="profile-avatar-copy">
+              <strong>${escapeHtml(profileName || 'Seu perfil')}</strong>
+              <span>JPG, PNG ou WebP • até 2 MB</span>
+              <small>A foto é recortada automaticamente no centro e otimizada para 256×256.</small>
+            </div>
+          </div>
+          <input class="hidden" data-profile-file type="file" accept="image/jpeg,image/png,image/webp" />
+          <div class="profile-modal-actions">
+            <button type="button" class="profile-choose" data-profile-choose>Escolher foto</button>
+            <button type="button" class="profile-remove" data-profile-remove>Remover foto</button>
+            <button type="button" class="profile-save" data-profile-save disabled>Salvar</button>
+          </div>
+        </div>
+      </section>
+    `;
+    document.body.appendChild(wrap);
+
+    wrap.addEventListener('click', event => {
+      if (event.target === wrap || event.target.closest('[data-profile-close]')) closeProfileModal();
+    });
+    wrap.querySelector('[data-profile-choose]')?.addEventListener('click', () => wrap.querySelector('[data-profile-file]')?.click());
+    wrap.querySelector('[data-profile-file]')?.addEventListener('change', async event => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Escolha uma imagem JPG, PNG ou WebP.');
+        if (file.size > 2 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 2 MB.');
+        pendingAvatarDataUrl = await prepareAvatarImage(file);
+        const preview = wrap.querySelector('[data-profile-preview]');
+        setAvatarNode(preview, profileName, pendingAvatarDataUrl, currentUser.avatarId);
+        wrap.querySelector('[data-profile-save]').disabled = false;
+      } catch (error) {
+        pendingAvatarDataUrl = '';
+        wrap.querySelector('[data-profile-save]').disabled = true;
+        notify(error.message || 'Não foi possível preparar esta imagem.', true);
+      } finally {
+        event.target.value = '';
+      }
+    });
+    wrap.querySelector('[data-profile-save]')?.addEventListener('click', saveProfileAvatar);
+    wrap.querySelector('[data-profile-remove]')?.addEventListener('click', removeProfileAvatar);
+    profileModal = wrap;
+    return wrap;
+  }
+
+  async function prepareAvatarImage(file) {
+    const bitmap = 'createImageBitmap' in window ? await createImageBitmap(file) : null;
+    let source = bitmap;
+    let objectUrl = '';
+    if (!source) {
+      objectUrl = URL.createObjectURL(file);
+      source = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Não foi possível abrir esta imagem.'));
+        image.src = objectUrl;
+      });
+    }
+
+    try {
+      const width = Number(source.width || source.naturalWidth || 0);
+      const height = Number(source.height || source.naturalHeight || 0);
+      if (!width || !height) throw new Error('Imagem inválida.');
+      const size = Math.min(width, height);
+      const sx = Math.max(0, (width - size) / 2);
+      const sy = Math.max(0, (height - size) / 2);
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#232428';
+      ctx.fillRect(0, 0, 256, 256);
+      ctx.drawImage(source, sx, sy, size, size, 0, 0, 256, 256);
+
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.88))
+        || await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+      if (!blob) throw new Error('Não foi possível otimizar a imagem.');
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'));
+        reader.readAsDataURL(blob);
+      });
+    } finally {
+      try { bitmap?.close?.(); } catch {}
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  function openProfileModal() {
+    const modal = ensureProfileModal();
+    pendingAvatarDataUrl = '';
+    const preview = modal.querySelector('[data-profile-preview]');
+    setAvatarNode(preview, profileName, currentUser.avatarUrl, currentUser.avatarId);
+    const copy = modal.querySelector('.profile-avatar-copy strong');
+    if (copy) copy.textContent = profileName || 'Seu perfil';
+    const save = modal.querySelector('[data-profile-save]');
+    if (save) save.disabled = true;
+    const remove = modal.querySelector('[data-profile-remove]');
+    if (remove) remove.disabled = !currentUser.avatarUrl;
+    modal.classList.remove('hidden');
+    closeMobilePanels();
+  }
+
+  function closeProfileModal() {
+    pendingAvatarDataUrl = '';
+    profileModal?.classList.add('hidden');
+  }
+
+  async function saveProfileAvatar() {
+    if (!pendingAvatarDataUrl || avatarUploadBusy) return;
+    avatarUploadBusy = true;
+    const save = profileModal?.querySelector('[data-profile-save]');
+    if (save) { save.disabled = true; save.textContent = 'Salvando…'; }
+    try {
+      const data = await api('/api/profile/avatar', {
+        method: 'PUT',
+        body: JSON.stringify({ imageData: pendingAvatarDataUrl }),
+      });
+      if (data.me) applyMe(data.me);
+      pendingAvatarDataUrl = '';
+      notify('Foto de perfil atualizada.');
+      closeProfileModal();
+    } catch (error) {
+      notify(error.message || 'Não foi possível salvar sua foto.', true);
+      if (save) save.disabled = false;
+    } finally {
+      avatarUploadBusy = false;
+      if (save) save.textContent = 'Salvar';
+    }
+  }
+
+  async function removeProfileAvatar() {
+    if (avatarUploadBusy || !currentUser.avatarUrl) return;
+    if (!window.confirm('Remover sua foto de perfil?')) return;
+    avatarUploadBusy = true;
+    try {
+      const data = await api('/api/profile/avatar', { method: 'DELETE' });
+      if (data.me) applyMe(data.me);
+      notify('Foto de perfil removida.');
+      closeProfileModal();
+    } catch (error) {
+      notify(error.message || 'Não foi possível remover sua foto.', true);
+    } finally {
+      avatarUploadBusy = false;
+    }
+  }
+
   fullscreenCallBtn?.addEventListener('click', toggleCallFullscreen);
   document.addEventListener('fullscreenchange', () => {
     if (!fullscreenCallBtn) return;
@@ -2334,6 +2560,7 @@
     if (event.key === 'Escape' && channelMenuTarget) closeChannelMenu();
     if (event.key === 'Escape') closeUserRoleMenu();
     if (event.key === 'Escape' && adminModal && !adminModal.classList.contains('hidden')) closeAdminPanel();
+    if (event.key === 'Escape' && profileModal && !profileModal.classList.contains('hidden')) closeProfileModal();
     if (event.key === 'Escape' && isMobileLayout()) closeMobilePanels();
   });
 
@@ -2385,6 +2612,14 @@
     userLongPressTimer = null;
   }, { passive: true }));
 
+  editProfileBtn?.addEventListener('click', openProfileModal);
+  selfAvatar?.addEventListener('click', openProfileModal);
+  selfAvatar?.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openProfileModal();
+    }
+  });
   adminSettingsBtn?.addEventListener('click', () => openAdminPanel('roles'));
 
   membersToggle.addEventListener('click', () => {
