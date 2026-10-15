@@ -567,3 +567,68 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
   .call-stage.screen-active .video-grid{max-height:calc(60dvh - 40px)}
   .call-stage:fullscreen .video-grid{max-height:none}
 }
+
+
+/* Etapa 13: fotos de perfil */
+.avatar{overflow:hidden;position:relative;flex:0 0 auto}
+.avatar.has-photo{background:#111214;color:transparent}
+.avatar img{width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit}
+.editable-avatar{cursor:pointer;outline:0;transition:box-shadow .15s ease,filter .15s ease}
+.editable-avatar:hover{filter:brightness(1.08);box-shadow:0 0 0 2px #5865f2}
+.editable-avatar:focus-visible{box-shadow:0 0 0 2px #5865f2,0 0 0 4px #232428}
+
+.voice-member-avatar-wrap{width:22px;height:22px;position:relative;flex:0 0 22px}
+.voice-member .voice-avatar{width:22px;height:22px;font-size:7px}
+.voice-member-avatar-wrap .voice-member-dot{
+  position:absolute;right:-2px;bottom:-2px;width:8px;height:8px;
+  border:2px solid var(--bg-channel);z-index:2;
+}
+.voice-member.speaking .voice-member-avatar-wrap .voice-member-dot{
+  box-shadow:0 0 0 2px var(--bg-channel),0 0 0 3px rgba(35,165,89,.28);
+}
+.member-avatar-wrap .avatar img,.message .avatar img,.admin-member-item .avatar img{pointer-events:none}
+
+.profile-modal-backdrop{
+  position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.72);
+  display:grid;place-items:center;padding:18px;
+}
+.profile-modal{
+  width:min(500px,96vw);background:#1e1f22;border:1px solid #2f3136;border-radius:12px;
+  box-shadow:0 24px 70px #000b;overflow:hidden;
+}
+.profile-modal-head{
+  height:60px;padding:0 16px;display:flex;align-items:center;justify-content:space-between;
+  background:#232428;border-bottom:1px solid #2b2d31;
+}
+.profile-modal-head>div{display:flex;flex-direction:column}
+.profile-modal-head strong{font-size:15px}.profile-modal-head small{margin-top:2px;color:#949ba4;font-size:10px}
+.profile-modal-head>button{width:34px;height:34px;border-radius:5px;background:transparent;color:#b5bac1;cursor:pointer;font-size:23px}
+.profile-modal-head>button:hover{background:#35373c;color:#fff}
+.profile-modal-body{padding:20px}
+.profile-avatar-area{display:flex;align-items:center;gap:16px}
+.profile-avatar-preview{width:96px;height:96px;font-size:28px;box-shadow:0 0 0 4px #2b2d31}
+.profile-avatar-copy{display:flex;flex-direction:column;min-width:0}
+.profile-avatar-copy strong{font-size:16px;color:#f2f3f5}
+.profile-avatar-copy span{margin-top:5px;color:#b5bac1;font-size:11px}
+.profile-avatar-copy small{margin-top:5px;color:#80848e;font-size:10px;line-height:1.4}
+.profile-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;flex-wrap:wrap}
+.profile-modal-actions button{height:36px;border-radius:5px;padding:0 13px;cursor:pointer;font-size:11px;font-weight:700}
+.profile-choose{background:#404249;color:#fff}.profile-choose:hover{background:#4b4d55}
+.profile-remove{background:transparent;color:#ffb8ba}.profile-remove:hover{background:#4a292b}
+.profile-save{background:#5865f2;color:#fff}.profile-save:hover{filter:brightness(1.08)}
+.profile-modal-actions button:disabled{opacity:.45;cursor:default;filter:none}
+
+.admin-member-identity{display:flex;align-items:center;gap:10px;min-width:0}
+.admin-member-identity .admin-avatar{width:44px;height:44px;font-size:12px}
+.admin-danger.secondary{background:#3b292b;color:#ffb8ba}
+.admin-danger.secondary:hover{background:#4a292b}
+
+@media(max-width:760px){
+  .profile-modal-backdrop{padding:0;place-items:end center}
+  .profile-modal{width:100%;border-radius:14px 14px 0 0;border-bottom:0}
+  .profile-modal-body{padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
+  .profile-avatar-preview{width:82px;height:82px}
+  .profile-modal-actions{display:grid;grid-template-columns:1fr 1fr}
+  .profile-modal-actions .profile-save{grid-column:1/-1}
+  .profile-modal-actions button{width:100%;height:42px}
+}
