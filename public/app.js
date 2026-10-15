@@ -1969,31 +1969,82 @@
     }
   });
 
+  async function createAppFocusedScreenTracks() {
+    const mediaDevices = navigator.mediaDevices;
+    const { LocalVideoTrack, LocalAudioTrack } = LivekitClient;
+    if (!mediaDevices?.getDisplayMedia || typeof LocalVideoTrack !== 'function' || typeof LocalAudioTrack !== 'function') {
+      return null;
+    }
+
+    // Pede ao Chrome/Edge para priorizar o áudio da aba/janela escolhida,
+    // evitando oferecer o áudio completo do computador quando isso for suportado.
+    const stream = await mediaDevices.getDisplayMedia({
+      video: {
+        width: { max: 1920 },
+        height: { max: 1080 },
+        frameRate: { ideal: 60, max: 60 },
+      },
+      audio: {
+        restrictOwnAudio: true,
+        suppressLocalAudioPlayback: false,
+      },
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'include',
+      systemAudio: 'exclude',
+      windowAudio: 'window',
+      preferCurrentTab: false,
+    });
+
+    const rawVideoTrack = stream.getVideoTracks()[0];
+    const rawAudioTrack = stream.getAudioTracks()[0];
+    if (!rawVideoTrack) {
+      stream.getTracks().forEach(track => { try { track.stop(); } catch {} });
+      throw new Error('O navegador não retornou a imagem da tela.');
+    }
+
+    const surface = rawVideoTrack.getSettings?.().displaySurface || '';
+    const tracks = [new LocalVideoTrack(rawVideoTrack, undefined, true)];
+    if (rawAudioTrack) tracks.push(new LocalAudioTrack(rawAudioTrack, undefined, true));
+    return { tracks, surface };
+  }
+
   async function publishScreenShareWithAudio() {
-    if (!lkRoom) return { hasAudio: false, fallback: false };
+    if (!lkRoom) return { hasAudio: false, fallback: false, surface: '' };
     const participant = lkRoom.localParticipant;
     const { Track } = LivekitClient;
 
-    if (typeof participant.createScreenTracks !== 'function') {
+    let capture = await createAppFocusedScreenTracks();
+    let tracks;
+    let surface = '';
+
+    if (capture) {
+      tracks = capture.tracks;
+      surface = capture.surface;
+    } else if (typeof participant.createScreenTracks === 'function') {
+      // Fallback para navegadores/versões antigas do LiveKit. Ainda excluímos
+      // o áudio geral do sistema quando o navegador respeitar esta opção.
+      tracks = await participant.createScreenTracks({
+        audio: true,
+        systemAudio: 'exclude',
+        resolution: { width: 1920, height: 1080, frameRate: 60 },
+        contentHint: 'motion',
+      });
+    } else {
       await participant.setScreenShareEnabled(
         true,
         {
           resolution: { width: 1920, height: 1080, frameRate: 60 },
           contentHint: 'motion',
+          systemAudio: 'exclude',
         },
         {
           videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
           degradationPreference: 'maintain-framerate',
         },
       );
-      return { hasAudio: false, fallback: true };
+      return { hasAudio: false, fallback: true, surface: '' };
     }
 
-    const tracks = await participant.createScreenTracks({
-      audio: true,
-      resolution: { width: 1920, height: 1080, frameRate: 60 },
-      contentHint: 'motion',
-    });
     const videoTrack = tracks.find(track => track.kind === Track.Kind.Video || track.kind === 'video');
     const audioTrack = tracks.find(track => track.kind === Track.Kind.Audio || track.kind === 'audio');
     if (!videoTrack) {
@@ -2001,11 +2052,16 @@
       throw new Error('O navegador não retornou a imagem da tela.');
     }
 
-    await participant.publishTrack(videoTrack, {
-      source: Track.Source.ScreenShare,
-      videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
-      degradationPreference: 'maintain-framerate',
-    });
+    try {
+      await participant.publishTrack(videoTrack, {
+        source: Track.Source.ScreenShare,
+        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+        degradationPreference: 'maintain-framerate',
+      });
+    } catch (error) {
+      tracks.forEach(track => { try { track.stop?.(); } catch {} });
+      throw error;
+    }
 
     let hasAudio = false;
     if (audioTrack) {
@@ -2019,7 +2075,7 @@
         try { audioTrack.stop?.(); } catch {}
       }
     }
-    return { hasAudio, fallback: false };
+    return { hasAudio, fallback: false, surface };
   }
 
   async function stopScreenShareTracks() {
@@ -2059,9 +2115,17 @@
         setTimeout(refreshLocalVideo, 100);
         updateControlButtons();
         if (result.hasAudio) {
-          notify('Live iniciada com som.');
+          if (result.surface === 'browser') {
+            notify('Live iniciada com som apenas da aba compartilhada.');
+          } else if (result.surface === 'window') {
+            notify('Live iniciada com som da janela/aplicativo compartilhado.');
+          } else {
+            notify('Live iniciada com som da fonte compartilhada.');
+          }
+        } else if (result.surface === 'monitor') {
+          notify('Tela inteira compartilhada sem áudio do sistema. Para enviar só o som de um aplicativo, compartilhe a janela dele.', true);
         } else {
-          notify('Live iniciada sem som. Para transmitir áudio, marque “Compartilhar áudio” no seletor do navegador.', true);
+          notify('Live iniciada sem som. Em uma aba ou janela compatível, ative “Compartilhar áudio” no seletor do navegador.', true);
         }
       } else {
         await stopScreenShareTracks();
