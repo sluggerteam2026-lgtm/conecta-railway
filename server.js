@@ -28,6 +28,8 @@ const DATABASE_URL = String(process.env.DATABASE_URL || '');
 const MASTER_NAME = 'yCsLouco';
 const TEXT_LOBBY_SLUG = 'sala-de-todos';
 const VOICE_LOBBY_SLUG = 'sala-de-todos-voz';
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 const ALL_PERMISSIONS = {
   send_messages: true,
@@ -78,7 +80,7 @@ const pool = DATABASE_URL
   : null;
 
 app.disable('x-powered-by');
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '4mb' }));
 app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
 app.get('/', (_req, res) => {
   if (!existsSync(INDEX_FILE)) return res.status(500).send('Conecta: public/index.html não foi encontrado no deploy.');
@@ -102,6 +104,30 @@ function cleanRoleName(value) {
 function cleanColor(value) {
   const color = String(value || '').trim();
   return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toUpperCase() : '#5865F2';
+}
+
+function avatarUrl(publicId, version, hasAvatar = true) {
+  if (!hasAvatar || !publicId) return null;
+  return `/api/avatar/${encodeURIComponent(String(publicId))}?v=${Number(version) || 0}`;
+}
+function detectImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A]))) return 'image/png';
+  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+function decodeAvatarDataUrl(value) {
+  const match = String(value || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\r\n]+)$/);
+  if (!match) return null;
+  const declaredMime = match[1].toLowerCase();
+  if (!AVATAR_MIME_TYPES.has(declaredMime)) return null;
+  let buffer;
+  try { buffer = Buffer.from(match[2], 'base64'); } catch { return null; }
+  if (!buffer.length || buffer.length > MAX_AVATAR_BYTES) return null;
+  const detectedMime = detectImageMime(buffer);
+  if (!detectedMime || detectedMime !== declaredMime) return null;
+  return { buffer, mime: detectedMime };
 }
 function slugifyChannelName(value) {
   const slug = cleanChannelName(value)
@@ -130,6 +156,8 @@ function rowToMessage(row, mine = false) {
     text: row.body,
     ts: new Date(row.created_at).getTime(),
     editedAt: row.edited_at ? new Date(row.edited_at).getTime() : null,
+    avatarId: row.avatar_public_id ? String(row.avatar_public_id) : null,
+    avatarUrl: avatarUrl(row.avatar_public_id, row.avatar_version, row.has_avatar),
     mine,
   };
 }
@@ -179,6 +207,40 @@ async function getMasterUserKey() {
   return String(result.rows[0]?.user_key || '');
 }
 
+async function getProfilePresentation(userKey) {
+  if (!pool || !userKey) return { avatarId: null, avatarUrl: null };
+  const result = await pool.query(`
+    SELECT public_id, avatar_version, avatar_data IS NOT NULL AS has_avatar
+    FROM profiles WHERE user_key = $1 LIMIT 1
+  `, [userKey]);
+  const row = result.rows[0];
+  if (!row) return { avatarId: null, avatarUrl: null };
+  return {
+    avatarId: row.public_id ? String(row.public_id) : null,
+    avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
+  };
+}
+
+async function syncSessionPresentation(session) {
+  if (!session) return session;
+  const presentation = await getProfilePresentation(session.userKey);
+  session.avatarId = presentation.avatarId;
+  session.avatarUrl = presentation.avatarUrl;
+  return session;
+}
+
+async function publishAvatarChange(userKey) {
+  const presentation = await getProfilePresentation(userKey);
+  for (const session of sessions.values()) {
+    if (session.userKey !== userKey) continue;
+    session.avatarId = presentation.avatarId;
+    session.avatarUrl = presentation.avatarUrl;
+  }
+  io.emit('avatar-updated', presentation);
+  await emitPresence();
+  return presentation;
+}
+
 async function getUserRoles(userKey) {
   if (!pool || !userKey) return [];
   const result = await pool.query(`
@@ -220,6 +282,8 @@ function publicMe(session, access) {
     isAdmin: access.isAdmin,
     roles: access.roles.map(publicRole),
     permissions: access.permissions,
+    avatarId: session.avatarId || null,
+    avatarUrl: session.avatarUrl || null,
   };
 }
 
@@ -292,6 +356,20 @@ async function buildPublicUsersForViewer(viewerSession) {
     }
   }
 
+  const profileMap = new Map();
+  if (userKeys.length) {
+    const result = await pool.query(`
+      SELECT user_key, public_id, avatar_version, avatar_data IS NOT NULL AS has_avatar
+      FROM profiles WHERE user_key = ANY($1::varchar[])
+    `, [userKeys]);
+    for (const row of result.rows) {
+      profileMap.set(row.user_key, {
+        avatarId: row.public_id ? String(row.public_id) : null,
+        avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
+      });
+    }
+  }
+
   const masterKey = await getMasterUserKey();
   const users = [];
   for (const [sessionId, socketId] of entries) {
@@ -315,6 +393,8 @@ async function buildPublicUsersForViewer(viewerSession) {
       roleIds: roles.map(role => role.id),
       primaryRole: displayRoles[0] || null,
       isMaster,
+      avatarId: profileMap.get(session.userKey)?.avatarId || null,
+      avatarUrl: profileMap.get(session.userKey)?.avatarUrl || null,
       ...(canManageMembers ? { userKey: session.userKey } : {}),
     });
   }
@@ -336,6 +416,7 @@ async function emitPresence() {
 async function refreshOnlineSessionAccess(targetUserKey = null) {
   for (const [sessionId, session] of sessions.entries()) {
     if (targetUserKey && session.userKey !== targetUserKey) continue;
+    await syncSessionPresentation(session);
     const access = await getUserAccess(session);
     session.isMaster = access.isMaster;
     session.isAdmin = access.isAdmin;
@@ -443,6 +524,15 @@ async function initDatabase() {
     )
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS one_master_only_idx ON profiles (is_master) WHERE is_master = TRUE`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS public_id UUID`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_data BYTEA`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_mime VARCHAR(32)`);
+  await pool.query(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_version BIGINT NOT NULL DEFAULT 0`);
+  const profilesWithoutPublicId = await pool.query(`SELECT user_key FROM profiles WHERE public_id IS NULL`);
+  for (const row of profilesWithoutPublicId.rows) {
+    await pool.query(`UPDATE profiles SET public_id = $1 WHERE user_key = $2 AND public_id IS NULL`, [crypto.randomUUID(), row.user_key]);
+  }
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS profiles_public_id_unique_idx ON profiles (public_id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS roles (
@@ -527,8 +617,11 @@ app.post('/api/login', async (req, res) => {
       name = MASTER_NAME;
     }
 
+    await pool.query(`UPDATE profiles SET public_id = $2 WHERE user_key = $1 AND public_id IS NULL`, [userKey, crypto.randomUUID()]);
+
     const sessionId = crypto.randomUUID();
-    const session = { name, userKey, createdAt: Date.now(), lastSeen: Date.now(), isMaster: false, isAdmin: false };
+    const session = { name, userKey, createdAt: Date.now(), lastSeen: Date.now(), isMaster: false, isAdmin: false, avatarId: null, avatarUrl: null };
+    await syncSessionPresentation(session);
     const access = await getUserAccess(session);
     session.isMaster = access.isMaster;
     session.isAdmin = access.isAdmin;
@@ -550,6 +643,69 @@ app.get('/api/me', async (req, res) => {
   } catch (error) {
     console.error('Erro ao carregar perfil:', error);
     res.status(500).json({ error: 'Não foi possível carregar suas permissões.' });
+  }
+});
+
+
+app.get('/api/avatar/:publicId', async (req, res) => {
+  try {
+    const publicId = String(req.params.publicId || '').trim();
+    if (!/^[0-9a-f-]{36}$/i.test(publicId) || !pool) return res.status(404).end();
+    const result = await pool.query(`
+      SELECT avatar_data, avatar_mime, avatar_version
+      FROM profiles WHERE public_id = $1 LIMIT 1
+    `, [publicId]);
+    const row = result.rows[0];
+    if (!row?.avatar_data || !AVATAR_MIME_TYPES.has(row.avatar_mime)) return res.status(404).end();
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type(row.avatar_mime);
+    res.send(row.avatar_data);
+  } catch (error) {
+    console.error('Erro ao carregar avatar:', error);
+    res.status(404).end();
+  }
+});
+
+app.put('/api/profile/avatar', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    const decoded = decodeAvatarDataUrl(req.body?.imageData);
+    if (!decoded) return res.status(400).json({ error: 'Use uma imagem JPG, PNG ou WebP válida de até 2 MB.' });
+
+    const result = await pool.query(`
+      UPDATE profiles
+      SET avatar_data = $1, avatar_mime = $2, avatar_version = avatar_version + 1, updated_at = NOW()
+      WHERE user_key = $3
+      RETURNING public_id, avatar_version
+    `, [decoded.buffer, decoded.mime, auth.session.userKey]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Perfil não encontrado.' });
+
+    const presentation = await publishAvatarChange(auth.session.userKey);
+    const access = await getUserAccess(auth.session);
+    res.json({ ok: true, avatar: presentation, me: publicMe(auth.session, access) });
+  } catch (error) {
+    console.error('Erro ao salvar avatar:', error);
+    res.status(500).json({ error: 'Não foi possível salvar sua foto de perfil.' });
+  }
+});
+
+app.delete('/api/profile/avatar', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida. Entre novamente.' });
+    await pool.query(`
+      UPDATE profiles
+      SET avatar_data = NULL, avatar_mime = NULL, avatar_version = avatar_version + 1, updated_at = NOW()
+      WHERE user_key = $1
+    `, [auth.session.userKey]);
+    const presentation = await publishAvatarChange(auth.session.userKey);
+    const access = await getUserAccess(auth.session);
+    res.json({ ok: true, avatar: presentation, me: publicMe(auth.session, access) });
+  } catch (error) {
+    console.error('Erro ao remover avatar:', error);
+    res.status(500).json({ error: 'Não foi possível remover sua foto de perfil.' });
   }
 });
 
@@ -760,13 +916,16 @@ app.get('/api/messages/:channel', async (req, res) => {
     }
 
     const result = await pool.query(`
-      SELECT id, channel, author_key, author_name, body, created_at, edited_at
+      SELECT recent.id, recent.channel, recent.author_key, recent.author_name, recent.body, recent.created_at, recent.edited_at,
+             p.public_id AS avatar_public_id, p.avatar_version,
+             (p.avatar_data IS NOT NULL) AS has_avatar
       FROM (
         SELECT id, channel, author_key, author_name, body, created_at, edited_at
         FROM messages WHERE channel = $1
         ORDER BY created_at DESC LIMIT 100
       ) recent
-      ORDER BY created_at ASC
+      LEFT JOIN profiles p ON p.user_key = recent.author_key
+      ORDER BY recent.created_at ASC
     `, [channel]);
     res.json({ messages: result.rows.map(row => rowToMessage(row, row.author_key === auth.session.userKey)) });
   } catch (error) {
@@ -912,7 +1071,8 @@ app.get('/api/admin/members', async (req, res) => {
     if (!(await canManage(auth.session, 'manage_members'))) return res.status(403).json({ error: 'Sem permissão para gerenciar membros.' });
 
     const result = await pool.query(`
-      SELECT p.user_key, p.name, p.is_master, p.updated_at,
+      SELECT p.user_key, p.name, p.is_master, p.updated_at, p.public_id, p.avatar_version,
+             (p.avatar_data IS NOT NULL) AS has_avatar,
              COALESCE(
                json_agg(json_build_object('id', r.id, 'name', r.name, 'color', r.color, 'systemKey', r.system_key)
                  ORDER BY CASE WHEN r.system_key = 'admin' THEN 0 ELSE 1 END, r.created_at ASC)
@@ -930,6 +1090,8 @@ app.get('/api/admin/members', async (req, res) => {
       name: row.name,
       isMaster: Boolean(row.is_master),
       roles: row.roles || [],
+      avatarId: row.public_id ? String(row.public_id) : null,
+      avatarUrl: avatarUrl(row.public_id, row.avatar_version, row.has_avatar),
     })) });
   } catch (error) {
     console.error('Erro ao carregar membros:', error);
@@ -984,6 +1146,29 @@ app.put('/api/admin/members/:userKey/roles', async (req, res) => {
     res.status(500).json({ error: 'Não foi possível alterar os cargos.' });
   } finally {
     client?.release();
+  }
+});
+
+
+app.delete('/api/admin/members/:userKey/avatar', async (req, res) => {
+  try {
+    const auth = getSession(req);
+    if (!auth) return res.status(401).json({ error: 'Sessão inválida.' });
+    if (!(await canManage(auth.session, 'manage_members'))) return res.status(403).json({ error: 'Sem permissão para remover fotos de perfil.' });
+
+    const targetUserKey = String(req.params.userKey || '').slice(0, 128);
+    const result = await pool.query(`
+      UPDATE profiles
+      SET avatar_data = NULL, avatar_mime = NULL, avatar_version = avatar_version + 1, updated_at = NOW()
+      WHERE user_key = $1
+      RETURNING user_key
+    `, [targetUserKey]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Usuário não encontrado.' });
+    await publishAvatarChange(targetUserKey);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao remover avatar do membro:', error);
+    res.status(500).json({ error: 'Não foi possível remover a foto deste membro.' });
   }
 });
 
@@ -1125,7 +1310,11 @@ io.on('connection', async socket => {
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [id, channel, userKey, name, text, createdAt]);
 
-      const message = { id, channel, name, text, ts: createdAt.getTime(), editedAt: null };
+      const message = {
+        id, channel, name, text, ts: createdAt.getTime(), editedAt: null,
+        avatarId: session.avatarId || null,
+        avatarUrl: session.avatarUrl || null,
+      };
       socket.emit('chat-message', { ...message, mine: true });
       socket.to(`text:${channel}`).emit('chat-message', { ...message, mine: false });
     } catch (error) {
