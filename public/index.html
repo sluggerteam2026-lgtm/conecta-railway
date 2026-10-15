@@ -94,10 +94,13 @@
 
       <div class="self-card">
         <div class="self-profile">
-          <div class="avatar-wrap"><div id="selfAvatar" class="avatar">?</div><span class="status-dot"></span></div>
+          <div class="avatar-wrap"><div id="selfAvatar" class="avatar editable-avatar" role="button" tabindex="0" title="Alterar foto de perfil" aria-label="Alterar foto de perfil">?</div><span class="status-dot"></span></div>
           <div class="self-copy"><strong id="selfName">Você</strong><span>Online</span></div>
         </div>
-        <div class="self-mini-actions"><button id="adminSettingsBtn" class="self-mini-button hidden" type="button" title="Administração" aria-label="Abrir administração">⚙</button></div>
+        <div class="self-mini-actions">
+          <button id="editProfileBtn" class="self-mini-button" type="button" title="Editar perfil" aria-label="Editar perfil">✎</button>
+          <button id="adminSettingsBtn" class="self-mini-button hidden" type="button" title="Administração" aria-label="Abrir administração">⚙</button>
+        </div>
       </div>
     </aside>
 
