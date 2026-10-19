@@ -1940,14 +1940,17 @@
       return 'Nenhuma câmera encontrada. Confira se a webcam está conectada.';
     }
     if (reason === 'NotReadableError' || reason === 'TrackStartError' || reason === 'AbortError') {
-      return 'A câmera está indisponível. Feche outros programas que estejam usando a webcam.';
+      return 'O navegador não conseguiu iniciar a câmera. Atualize a página ou confira o acesso à webcam no Windows.';
     }
     return `Não consegui ligar a câmera${reason ? ` (${reason})` : ''}. Verifique as permissões e tente novamente.`;
   }
 
+  let cameraTogglePending = false;
   cameraBtn.addEventListener('click', async () => {
-    if (!lkRoom) return;
+    if (!lkRoom || cameraTogglePending) return;
     if (!canUseVoicePermission('camera')) return notify('Seu cargo não permite usar câmera nesta sala.', true);
+    cameraTogglePending = true;
+    cameraBtn.disabled = true;
     try {
       if (!cameraEnabled) {
         callCollapsed = false;
@@ -1986,11 +1989,14 @@
           } catch (error) {
             lastError = error;
             console.warn(`Câmera: tentativa ${attempt.label} falhou:`, error);
-            // Outra resolução não resolve câmera negada, ausente ou em uso.
+            // Permissão negada ou câmera inexistente exigem intervenção do usuário.
+            // Falhas temporárias ao iniciar o dispositivo podem melhorar em HD ou automático.
             const reason = error?.name || error?.cause?.name || '';
             if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError',
-              'NotFoundError', 'DevicesNotFoundError', 'NotReadableError',
-              'TrackStartError', 'AbortError'].includes(reason)) break;
+              'NotFoundError', 'DevicesNotFoundError'].includes(reason)) break;
+            if (['NotReadableError', 'TrackStartError', 'AbortError'].includes(reason)) {
+              await new Promise(resolve => setTimeout(resolve, 350));
+            }
           }
         }
         if (!success) throw lastError || new Error('CameraUnavailable');
@@ -2005,6 +2011,9 @@
       console.error('Erro ao acessar a câmera:', error);
       updateControlButtons();
       notify(cameraAccessErrorMessage(error), true);
+    } finally {
+      cameraTogglePending = false;
+      updateControlButtons();
     }
   });
 
