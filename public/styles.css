@@ -712,3 +712,177 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 }
 .install-app-btn.ready{background:#3b4187;color:#fff;border-color:#5865f266}
 .install-app-btn.ready:hover{background:#4752c4}
+
+
+/* CONECTA 2.0 / PARTE 1 - Identidade visual futurista + seletor de live.
+   Apenas overrides de apresentacao: mantém o layout responsivo e regras anteriores. */
+:root{
+  --bg-server:#080e1a;--bg-channel:#101827;--bg-main:#0d1423;
+  --bg-members:#111a29;--bg-input:#1a2538;--bg-hover:#202b42;
+  --bg-active:#273753;--bg-user:#111c2c;--border:#273247;
+  --text:#f2f7ff;--text-2:#dce7f8;--muted:#b7c5d9;
+  --muted-2:#93a5c0;--muted-3:#71829e;--brand:#648cff;
+  --green:#36d4a5;--red:#fa5d79;--yellow:#ffc866;
+  --glow:0 0 30px rgba(75,128,255,.14);
+}
+body{background:#090f1e;color:#f2f7ff}
+button,select,input{font-family:inherit}
+button:focus-visible,select:focus-visible,.channel:focus-visible{
+  outline:2px solid #68deff;outline-offset:2px;
+}
+/* Acesso */
+.landing{
+  background:
+    radial-gradient(ellipse at 77% 26%,rgba(91,70,246,.27),transparent 40%),
+    radial-gradient(ellipse at 16% 72%,rgba(0,210,242,.16),transparent 35%),
+    linear-gradient(132deg,#090f1e,#111b34 58%,#080f20);
+}
+.landing-header{border-color:#ffffff15}
+.brand{font-size:19px;letter-spacing:-.04em}
+.brand-mark,.server-home{
+  background:linear-gradient(140deg,#5b79ff,#8662ff 64%,#2adeee);
+  box-shadow:0 6px 25px rgba(86,104,249,.33);
+}
+.brand-mark{border-radius:12px}
+.brand small{font-size:11px;letter-spacing:0;color:#b2c3e0}
+.brand-version,.server-version{
+  display:inline-block;font-size:10px;vertical-align:middle;margin-left:5px;
+  padding:3px 6px;border-radius:6px;background:#6d8aff29;
+  border:1px solid #819bff52;color:#b8c9ff;letter-spacing:.04em;
+}
+.privacy-pill{border-color:#77edff36;background:#14283b99;color:#a5dfea}
+.eyebrow,.mini-label{color:#82dcff}
+.hero-copy h1{font-size:clamp(52px,6.5vw,84px);letter-spacing:-.068em;line-height:1.03}
+.hero-copy h1 em{
+  color:#b5c4ff;
+  background:linear-gradient(90deg,#7be7ff,#a9a3ff 62%,#eeabff);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
+.hero-copy>p{color:#b8c9df}
+.feature-row span{
+  border:1px solid #5e84ff43;border-radius:14px;padding:10px 13px;
+  background:linear-gradient(145deg,#263c6191,#111d36aa);
+  color:#e3edff;box-shadow:inset 0 1px #ffffff10;
+}
+.login-card{
+  border:1px solid #6987bb48;border-radius:22px;
+  background:linear-gradient(152deg,#192840ec,#101a2ded);
+  box-shadow:0 28px 80px #0009,0 0 60px #5b81ff14;
+  backdrop-filter:blur(14px);
+}
+.login-card input{background:#0d172b;border:1px solid #344663;border-radius:10px}
+.login-card input:focus{box-shadow:0 0 0 2px #5b8bff70;border-color:#7ca1ff}
+.primary{border-radius:11px;background:linear-gradient(115deg,#557bff,#7b61f2);box-shadow:0 7px 25px #526cf84a}
+.primary:hover{filter:brightness(1.11)}
+/* Painéis */
+.server-rail{background:linear-gradient(180deg,#080e1c,#0b1526);border-right:1px solid #22314c}
+.server-icon{background:#1c2840;color:#acc2e1;border:1px solid #ffffff0c}
+.server-icon:hover,.server-icon.active{background:linear-gradient(145deg,#4a71df,#795cf1);box-shadow:0 3px 24px #506fff4b}
+.server-icon.active::before{background:#7de3ff}
+.channels-panel{background:linear-gradient(175deg,#111d31,#111a2b);border-right:1px solid #2b3650}
+.server-header{border-bottom:1px solid #2b3650;box-shadow:none}
+.server-header strong{letter-spacing:-.025em}
+.channel-section h3{color:#90a9ca;letter-spacing:.09em}
+.channel{border-radius:9px;color:#9fb0c9;transition:background .16s,color .16s,box-shadow .16s}
+.channel:hover,.voice-member:hover{background:#253450;color:#f2f7ff}
+.channel.active,.voice-channel.connected{
+  background:linear-gradient(90deg,#354d86a8,#202e4b);
+  color:#f7faff;box-shadow:inset 3px 0 #70ceff;
+}
+.voice-member{border-radius:8px;color:#b7c7df}
+.voice-dock{background:#101b2f;border-top:1px solid #31415d;padding:12px}
+.voice-connected-copy strong{color:#5de3c2}
+.voice-status-line{gap:5px}
+.voice-status-chip{color:#b3c3dc}
+.voice-actions{gap:6px}
+.dock-control{border-radius:11px!important;min-height:38px;background:#1c2b43;color:#e6f0ff;border:1px solid #ffffff10}
+.dock-control:hover{background:#2e4265;color:#fff}
+#micBtn.active,#audioBtn.active,#noiseBtn.off{background:#1c2b43;color:#dce7ff}
+#noiseBtn.active{background:#1b423e;color:#7dffe0}
+.self-card{background:#0d1728;border-top:1px solid #2c3d5b}
+.self-mini-button{border-radius:9px}
+.main-panel{background:#0e1626}
+.chat-head{background:#101a2b;border-bottom:1px solid #283650}
+.channel-title-icon{color:#77cfff}
+.head-edition{
+  border:1px solid #6f82fb43;background:#37477240;color:#b4c8ff;
+  letter-spacing:.12em;border-radius:20px;padding:5px 8px;font-size:9px;font-weight:800;
+}
+.online-count{color:#6bdebc}
+.head-button{border-radius:9px}
+.head-button:hover{background:#263a58}
+.message:hover{background:#19263a}
+.message-head strong{color:#f5f9ff}
+.message p{color:#cfddf0}
+.message-box{
+  background:#19283e;border:1px solid #364969;border-radius:14px;
+  box-shadow:0 12px 40px #0309148a,0 0 20px #557cff15;
+}
+.message-box:focus-within{border-color:#6f94d1;box-shadow:0 0 0 1px #6d9bff4d,0 12px 40px #0309148a}
+.message-box input{color:#f4f9ff}
+.welcome-message .hash-bubble{
+  border-radius:20px;background:linear-gradient(135deg,#4363b3,#6954b9);
+  box-shadow:0 12px 30px #435dd637;
+}
+.welcome-message h2{color:#eef6ff}
+.members-panel{background:#111b2c;border-left:1px solid #2b3952}
+.members-head{border-color:#2a3a53}
+.members-panel h3{color:#8ca8ca;letter-spacing:.085em}
+.member{border-radius:10px}
+.member:hover{background:#243651}
+.install-app-btn{background:linear-gradient(110deg,#314e7f,#29435e);border:1px solid #658dce5a;border-radius:10px}
+.install-app-btn.ready{background:linear-gradient(110deg,#4766d0,#6359cb);border-color:#8caaff66}
+/* Palco de lives */
+.call-stage{
+  background:radial-gradient(ellipse at 50% 45%,#1b2a46,#0c1423 68%);
+  border-bottom:1px solid #304361;
+}
+.call-stage-head{background:#101b2c;border-color:#304160;padding:0 15px}
+.call-stage-head strong{font-weight:750;letter-spacing:-.015em}
+.call-stage-head small{color:#9caecc}
+.live-dot{background:#ff4c7a;box-shadow:0 0 0 3px #ff4c7a24,0 0 14px #ff4c7a88}
+.call-stage-head button{background:#253752;color:#d3e3fa;border:1px solid #3c5070;border-radius:8px}
+.call-stage-head button:hover{background:#354e77}
+.video-grid{padding:14px;gap:12px}
+.video-tile{
+  border:1px solid #4c648775;border-radius:16px;background:#070d1b;
+  box-shadow:0 6px 30px #0006,0 0 25px #4b82ff15;
+}
+.video-grid.has-focus .video-tile.focused{box-shadow:0 0 0 2px #659cff,0 15px 35px #0008}
+.video-tile.speaking{box-shadow:0 0 0 2px #32d1bd,0 0 23px #31d8bd55}
+.video-label{border:1px solid #7286ab4b;border-radius:8px;background:#080e19db;backdrop-filter:blur(8px)}
+.empty-video-icon{background:linear-gradient(145deg,#293a61,#23274d);border:1px solid #6580ca46}
+.empty-video strong{color:#e4eeff}
+/* Configuracao FHD/HD de lives: só muda a proxima captura, nunca a camera. */
+.live-quality-setting{
+  margin-top:11px;padding:10px;border:1px solid #45628a66;border-radius:12px;
+  background:linear-gradient(120deg,#1b2d49,#17243b);
+}
+.live-quality-heading{display:flex;align-items:center;justify-content:space-between;gap:5px;color:#b7cff0;font-size:10px;font-weight:800;letter-spacing:.075em;margin-bottom:8px}
+.live-quality-fps{border:1px solid #4cd7bd66;border-radius:7px;padding:3px 6px;background:#143c37;color:#70f2dc;font-size:9px;letter-spacing:0}
+.live-quality-picker{display:flex;align-items:center;min-height:36px;border:1px solid #52739b;border-radius:8px;background:#101a2e;position:relative}
+.quality-display-icon{color:#86bbff;margin-left:9px;font-size:15px}
+.live-quality-picker select{
+  position:relative;z-index:1;cursor:pointer;flex:1;min-width:0;width:100%;height:35px;
+  padding:0 21px 0 8px;border:0;background:transparent;color:#eef6ff;
+  font-size:12px;font-weight:700;appearance:none;outline-offset:1px;
+}
+.live-quality-picker select option{background:#101b2d;color:#f0f6ff}
+.live-quality-picker select:disabled{color:#97a9c2;cursor:not-allowed;opacity:.65}
+.quality-select-chevron{position:absolute;right:9px;pointer-events:none;color:#aecbfa;font-size:16px}
+.live-quality-setting>small{display:block;font-size:10px;line-height:1.4;color:#8fa7c6;margin-top:7px}
+.live-quality-badge{color:#8be8ff;background:#194059a3;border:1px solid #61c6ff5c;border-radius:7px;padding:3px 6px;font-size:9px;font-weight:800;white-space:nowrap;letter-spacing:.04em}
+/* Respeita layouts mobile ja existentes. */
+@media(max-width:1080px){.head-edition{display:none}}
+@media(max-width:760px){
+  .brand-version{margin-left:3px}
+  .hero-copy h1{font-size:clamp(45px,9vw,66px)}
+  .call-stage-head{padding:0 8px}
+  .live-quality-badge{font-size:8px;padding:3px 4px}
+  .voice-dock{padding:10px}
+  .message-box{bottom:10px}
+  .live-quality-setting{padding:10px;margin-top:10px}
+}
+@media(prefers-reduced-motion:reduce){
+  .channel,.dock-control,.video-tile,.install-app-btn{transition:none!important}
+}
