@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#1e1f22" />
+  <meta name="theme-color" content="#0b1020" />
   <meta name="application-name" content="Conecta" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Conecta • sua turma, por perto</title>
+  <title>Conecta 2.0 • sua central de voz e lives</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/conecta-192.png" />
   <link rel="apple-touch-icon" href="/icons/conecta-192.png" />
@@ -21,16 +21,16 @@
 
   <main id="landing" class="landing">
     <header class="landing-header">
-      <div class="brand"><span class="brand-mark">C</span><span>Conecta</span><small>sua turma, por perto</small></div>
+      <div class="brand"><span class="brand-mark">C</span><span>Conecta <span class="brand-version">2.0</span></span><small>seu espaço, outra dimensão</small></div>
       <span class="privacy-pill">privado • até 20 pessoas</span>
     </header>
 
     <section class="hero">
       <div class="hero-copy">
-        <span class="eyebrow">UM LUGAR SÓ DA TURMA</span>
-        <h1>Converse, jogue e<br><em>fique por perto.</em></h1>
-        <p>Texto, voz, câmera e compartilhamento de tela em um só lugar.</p>
-        <div class="feature-row"><span>🎙 Voz</span><span>📹 Vídeo</span><span>🖥 Tela</span><span>👥 Até 20</span></div>
+        <span class="eyebrow">● CONECTA 2.0 / NEXT-GEN SOCIAL</span>
+        <h1>Seu universo.<br><em>Sua conexão.</em></h1>
+        <p>Entre na conversa, compartilhe seus melhores momentos e leve suas lives para outro nível.</p>
+        <div class="feature-row"><span>◈ Voz em tempo real</span><span>▣ Lives até 1080p / 60 FPS</span><span>✧ Espaço privado</span></div>
       </div>
 
       <form id="loginForm" class="login-card">
@@ -59,7 +59,7 @@
 
     <aside id="channelsPanel" class="channels-panel">
       <div class="server-header">
-        <strong>Conecta</strong>
+        <strong>Conecta <span class="server-version">2.0</span></strong>
         <span class="server-chevron">⌄</span>
         <button id="mobileChannelsClose" class="mobile-drawer-close mobile-only" type="button" title="Fechar" aria-label="Fechar canais">×</button>
       </div>
@@ -96,6 +96,18 @@
           <button id="cameraBtn" class="dock-control" title="Câmera" aria-label="Câmera">◉</button>
           <button id="screenBtn" class="dock-control" title="Compartilhar tela" aria-label="Compartilhar tela">▣</button>
         </div>
+        <div class="live-quality-setting">
+          <div class="live-quality-heading"><span>QUALIDADE DA LIVE</span><span class="live-quality-fps">60 FPS</span></div>
+          <div class="live-quality-picker">
+            <span class="quality-display-icon" aria-hidden="true">▣</span>
+            <select id="liveQualitySelect" aria-label="Resolução do compartilhamento de tela" title="Escolher qualidade antes de iniciar uma live">
+              <option value="fhd">Full HD · 1080p</option>
+              <option value="hd">HD · 720p</option>
+            </select>
+            <span class="quality-select-chevron" aria-hidden="true">⌄</span>
+          </div>
+          <small>Escolha antes de compartilhar sua tela.</small>
+        </div>
       </div>
 
       <div class="self-card">
@@ -120,7 +132,7 @@
           <small id="channelSubtitle">O papo principal da turma</small>
         </div>
         <div class="head-right">
-          <span id="onlineCount" class="online-count">1 online</span>
+          <span class="head-edition">◈ NOVA ERA</span><span id="onlineCount" class="online-count">1 online</span>
           <span class="head-icon" title="Notificações">🔔</span>
           <button id="membersToggle" class="head-button" title="Mostrar membros" aria-label="Mostrar membros">👥</button>
         </div>
@@ -128,7 +140,7 @@
 
       <section id="callStage" class="call-stage hidden">
         <div class="call-stage-head">
-          <div><span class="live-dot"></span><strong id="callStageTitle">Sala da turma</strong><small>AO VIVO</small></div>
+          <div><span class="live-dot"></span><strong id="callStageTitle">Sala da turma</strong><small>AO VIVO</small><span id="liveQualityBadge" class="live-quality-badge">FHD · 60 FPS</span></div>
           <div class="call-stage-actions">
             <button id="fullscreenCallBtn" type="button" title="Tela cheia">⛶ Tela cheia</button>
             <button id="collapseCallBtn" type="button">Recolher</button>
