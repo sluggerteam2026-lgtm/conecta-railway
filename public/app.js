@@ -38,6 +38,12 @@
   const callStageTitle = document.querySelector('#callStageTitle');
   const collapseCallBtn = document.querySelector('#collapseCallBtn');
   const fullscreenCallBtn = document.querySelector('#fullscreenCallBtn');
+  const liveLayoutBtn = document.querySelector('#liveLayoutBtn');
+  const liveTheaterBtn = document.querySelector('#liveTheaterBtn');
+  const liveVideoCount = document.querySelector('#liveVideoCount');
+  const liveNowWatching = document.querySelector('#liveNowWatching');
+  const liveActualQuality = document.querySelector('#liveActualQuality');
+  const mainPanel = document.querySelector('.main-panel');
   const videoGrid = document.querySelector('#videoGrid');
   const emptyVideo = document.querySelector('#emptyVideo');
   const audioBin = document.querySelector('#audioBin');
@@ -109,6 +115,8 @@
   });
   syncLiveQuality();
   let callCollapsed = false;
+  let liveLayoutMode = 'spotlight';
+  let liveCinemaEnabled = false;
   let cueAudioContext = null;
   const voiceTokenCache = new Map();
   const voiceTokenRequests = new Map();
@@ -1386,6 +1394,8 @@
     callStageTitle.textContent = voiceRoomName(roomName);
     callStage.classList.add('hidden');
     callCollapsed = false;
+    setLiveCinema(false);
+    liveLayoutMode = 'spotlight';
     document.querySelectorAll('.voice-channel').forEach(el => {
       el.classList.toggle('connected', el.dataset.room === roomName);
     });
@@ -1550,11 +1560,55 @@
     }
   }
 
+  function setLiveCinema(enabled) {
+    liveCinemaEnabled = Boolean(enabled && currentVoiceRoom && videoGrid.querySelector('.video-tile'));
+    mainPanel?.classList.toggle('live-cinema', liveCinemaEnabled);
+    callStage.classList.toggle('cinema-active', liveCinemaEnabled);
+    if (liveTheaterBtn) {
+      liveTheaterBtn.setAttribute('aria-pressed', String(liveCinemaEnabled));
+      liveTheaterBtn.textContent = liveCinemaEnabled ? '▤ Sair do cinema' : '▤ Cinema';
+      liveTheaterBtn.title = liveCinemaEnabled ? 'Mostrar o chat novamente' : 'Ampliar a live e ocultar o chat';
+    }
+    if (liveCinemaEnabled) {
+      callCollapsed = false;
+      callStage.classList.remove('is-collapsed');
+    }
+  }
+
+  function syncLiveStageInfo() {
+    const tiles = [...videoGrid.querySelectorAll('.video-tile')];
+    const screens = tiles.filter(tile => tile.classList.contains('screen'));
+    const current = tiles.find(tile => tile.classList.contains('focused')) || screens[0] || tiles[0];
+    if (liveVideoCount) liveVideoCount.textContent = `${tiles.length} ${tiles.length === 1 ? 'vídeo' : 'vídeos'}`;
+    if (liveNowWatching) {
+      if (!current) liveNowWatching.textContent = 'Aguardando transmissão';
+      else {
+        const title = current.querySelector('.video-label')?.textContent || 'Participante';
+        liveNowWatching.textContent = `${current.classList.contains('screen') ? 'Assistindo live' : 'Assistindo câmera'} · ${title}`;
+        liveNowWatching.title = liveNowWatching.textContent;
+      }
+    }
+    if (liveActualQuality) {
+      const video = current?.querySelector('video');
+      const width = Number(video?.videoWidth || 0);
+      const height = Number(video?.videoHeight || 0);
+      liveActualQuality.textContent = width && height ? `Recebido: ${width} × ${height}` : 'Qualidade: aguardando imagem';
+      liveActualQuality.title = 'Resolução real recebida pelo navegador; não garante 60 FPS';
+    }
+    callStage.classList.toggle('is-live', screens.length > 0);
+  }
+
   function syncCallStageVisibility() {
     const hasVideo = Boolean(videoGrid.querySelector('.video-tile'));
-    const shouldShow = Boolean(currentVoiceRoom && hasVideo && !callCollapsed);
+    const shouldShow = Boolean(currentVoiceRoom && hasVideo);
     callStage.classList.toggle('hidden', !shouldShow);
-
+    callStage.classList.toggle('is-collapsed', shouldShow && callCollapsed);
+    if (collapseCallBtn) {
+      collapseCallBtn.textContent = callCollapsed ? '+ Expandir' : '− Recolher';
+      collapseCallBtn.setAttribute('aria-expanded', String(!callCollapsed));
+      collapseCallBtn.title = callCollapsed ? 'Expandir a central de lives' : 'Recolher a central de lives';
+    }
+    if (!shouldShow && liveCinemaEnabled) setLiveCinema(false);
     if (!hasVideo && document.fullscreenElement === callStage) {
       document.exitFullscreen().catch(() => {});
     }
@@ -1562,37 +1616,43 @@
 
   function updateVideoLayout() {
     const tiles = [...videoGrid.querySelectorAll('.video-tile')];
-    const hasScreen = tiles.some(tile => tile.classList.contains('screen'));
+    const screens = tiles.filter(tile => tile.classList.contains('screen'));
+    const hasScreen = screens.length > 0;
+    const gallery = liveLayoutMode === 'gallery';
 
     videoGrid.classList.toggle('single-video', tiles.length === 1);
     videoGrid.classList.toggle('two-videos', tiles.length === 2);
     videoGrid.classList.toggle('has-screen', hasScreen);
+    videoGrid.classList.toggle('view-gallery', gallery);
     callStage.classList.toggle('screen-active', hasScreen);
 
-    // Quando uma live começa, ela vira automaticamente o destaque principal.
-    if (hasScreen && !tiles.some(tile => tile.classList.contains('focused'))) {
-      tiles.find(tile => tile.classList.contains('screen'))?.classList.add('focused');
+    if (gallery) tiles.forEach(tile => tile.classList.remove('focused'));
+    else if (tiles.length > 1 && !tiles.some(tile => tile.classList.contains('focused'))) {
+      (screens[0] || tiles[0])?.classList.add('focused');
     }
+    if (!hasScreen && tiles.length <= 1) tiles.forEach(tile => tile.classList.remove('focused'));
 
-    if (!hasScreen && tiles.length <= 1) {
-      tiles.forEach(tile => tile.classList.remove('focused'));
+    videoGrid.classList.toggle('has-focus', !gallery && tiles.some(tile => tile.classList.contains('focused')));
+    if (liveLayoutBtn) {
+      liveLayoutBtn.setAttribute('aria-pressed', String(!gallery));
+      liveLayoutBtn.textContent = gallery ? '▦ Grade' : '▣ Destaque';
+      liveLayoutBtn.title = gallery ? 'Mostrar vídeo em destaque' : 'Mostrar todos os vídeos em grade';
     }
-
-    videoGrid.classList.toggle('has-focus', tiles.some(tile => tile.classList.contains('focused')));
+    syncLiveStageInfo();
     syncCallStageVisibility();
   }
 
   function focusVideoTile(tile) {
     if (!tile || !videoGrid.contains(tile)) return;
     const tiles = [...videoGrid.querySelectorAll('.video-tile')];
-    if (tiles.length <= 1) return;
-
-    const hasScreen = tiles.some(item => item.classList.contains('screen'));
-    const wasFocused = tile.classList.contains('focused');
-    tiles.forEach(item => item.classList.remove('focused'));
-
-    // Sem compartilhamento de tela, clicar novamente no destaque volta para a grade normal.
-    if (!(wasFocused && !hasScreen)) tile.classList.add('focused');
+    const wasFocused = tile.classList.contains('focused') && liveLayoutMode === 'spotlight';
+    if (liveLayoutMode === 'spotlight' && wasFocused && !tiles.some(item => item.classList.contains('screen'))) {
+      liveLayoutMode = 'gallery';
+    } else {
+      liveLayoutMode = 'spotlight';
+      tiles.forEach(item => item.classList.remove('focused'));
+      if (tiles.length > 1) tile.classList.add('focused');
+    }
     updateVideoLayout();
   }
 
@@ -1622,8 +1682,8 @@
       }
     };
     apply();
-    video.addEventListener('loadedmetadata', apply, { once: true });
-    video.addEventListener('resize', apply);
+    video.addEventListener('loadedmetadata', () => { apply(); syncLiveStageInfo(); }, { once: true });
+    video.addEventListener('resize', () => { apply(); syncLiveStageInfo(); });
   }
 
   function hasRemoteScreenAudio(identity) {
@@ -1748,6 +1808,10 @@
     badge.className = 'video-label';
     badge.textContent = `${label}${local ? ' (você)' : ''}${isScreen ? ' • tela' : ''}`;
     tile.appendChild(badge);
+    const typePill = document.createElement('span');
+    typePill.className = 'live-tile-type';
+    typePill.textContent = isScreen ? '● LIVE' : '◉ CÂMERA';
+    tile.appendChild(typePill);
     prepareVideoTile(tile);
     if (isScreen) addScreenAudioControls(tile, participantIdentity, local);
     videoGrid.appendChild(tile);
@@ -1788,6 +1852,10 @@
       tile.appendChild(video);
       syncVideoAspect(tile, video, track);
       const badge = document.createElement('div'); badge.className = 'video-label'; badge.textContent = `${profileName} (você)${isScreen ? ' • tela' : ''}`; tile.appendChild(badge);
+      const typePill = document.createElement('span');
+      typePill.className = 'live-tile-type';
+      typePill.textContent = isScreen ? '● LIVE' : '◉ CÂMERA';
+      tile.appendChild(typePill);
       prepareVideoTile(tile);
       videoGrid.appendChild(tile);
 
@@ -1863,34 +1931,80 @@
     notify(roomSoundEnabled ? 'Som da sala ativado.' : 'Som da sala silenciado.');
   });
 
+  function cameraAccessErrorMessage(error) {
+    const reason = error?.name || error?.cause?.name || '';
+    if (reason === 'NotAllowedError' || reason === 'PermissionDeniedError' || reason === 'SecurityError') {
+      return 'A câmera foi bloqueada. Autorize o acesso nas permissões do navegador.';
+    }
+    if (reason === 'NotFoundError' || reason === 'DevicesNotFoundError') {
+      return 'Nenhuma câmera encontrada. Confira se a webcam está conectada.';
+    }
+    if (reason === 'NotReadableError' || reason === 'TrackStartError' || reason === 'AbortError') {
+      return 'A câmera está indisponível. Feche outros programas que estejam usando a webcam.';
+    }
+    return `Não consegui ligar a câmera${reason ? ` (${reason})` : ''}. Verifique as permissões e tente novamente.`;
+  }
+
   cameraBtn.addEventListener('click', async () => {
     if (!lkRoom) return;
     if (!canUseVoicePermission('camera')) return notify('Seu cargo não permite usar câmera nesta sala.', true);
     try {
-      cameraEnabled = !cameraEnabled;
-
-      if (cameraEnabled) {
+      if (!cameraEnabled) {
         callCollapsed = false;
-        await lkRoom.localParticipant.setCameraEnabled(
-          true,
+        // A câmera tenta 1080p primeiro, mas não exige webcam Full HD.
+        // A qualidade da live/tela compartilhada continua independente.
+        const attempts = [
           {
-            resolution: { width: 1920, height: 1080, frameRate: 30 },
+            label: 'Full HD',
+            capture: { resolution: { width: 1920, height: 1080, frameRate: 30 } },
+            publish: {
+              videoEncoding: { maxBitrate: 5_000_000, maxFramerate: 30 },
+              degradationPreference: 'maintain-resolution',
+            },
           },
           {
-            videoEncoding: { maxBitrate: 5_000_000, maxFramerate: 30 },
-            degradationPreference: 'maintain-resolution',
+            label: 'HD',
+            capture: { resolution: { width: 1280, height: 720, frameRate: 30 } },
+            publish: {
+              videoEncoding: { maxBitrate: 3_000_000, maxFramerate: 30 },
+              degradationPreference: 'maintain-resolution',
+            },
           },
-        );
+          { label: 'automático', capture: undefined, publish: undefined },
+        ];
+        let lastError;
+        let success = false;
+        for (const attempt of attempts) {
+          try {
+            await lkRoom.localParticipant.setCameraEnabled(true, attempt.capture, attempt.publish);
+            cameraEnabled = true;
+            success = true;
+            if (attempt.label !== 'Full HD') {
+              notify(attempt.label === 'HD' ? 'Câmera ligada em HD (720p).' : 'Câmera ligada em qualidade automática.');
+            }
+            break;
+          } catch (error) {
+            lastError = error;
+            console.warn(`Câmera: tentativa ${attempt.label} falhou:`, error);
+            // Outra resolução não resolve câmera negada, ausente ou em uso.
+            const reason = error?.name || error?.cause?.name || '';
+            if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError',
+              'NotFoundError', 'DevicesNotFoundError', 'NotReadableError',
+              'TrackStartError', 'AbortError'].includes(reason)) break;
+          }
+        }
+        if (!success) throw lastError || new Error('CameraUnavailable');
       } else {
         await lkRoom.localParticipant.setCameraEnabled(false);
+        cameraEnabled = false;
       }
-
       setTimeout(refreshLocalVideo, 100);
       updateControlButtons();
     } catch (error) {
       cameraEnabled = false;
+      console.error('Erro ao acessar a câmera:', error);
       updateControlButtons();
-      notify('Não consegui acessar a câmera em Full HD.', true);
+      notify(cameraAccessErrorMessage(error), true);
     }
   });
 
@@ -2140,6 +2254,10 @@
     updateEmptyVideo();
     updateVideoLayout();
     if (document.fullscreenElement === callStage) document.exitFullscreen().catch(() => {});
+    setLiveCinema(false);
+    callCollapsed = false;
+    liveLayoutMode = 'spotlight';
+    updateVideoLayout();
   }
 
 
@@ -2701,6 +2819,14 @@
     }
   }
 
+  liveLayoutBtn?.addEventListener('click', () => {
+    liveLayoutMode = liveLayoutMode === 'spotlight' ? 'gallery' : 'spotlight';
+    updateVideoLayout();
+  });
+  liveTheaterBtn?.addEventListener('click', () => {
+    setLiveCinema(!liveCinemaEnabled);
+    updateVideoLayout();
+  });
   fullscreenCallBtn?.addEventListener('click', toggleCallFullscreen);
   document.addEventListener('fullscreenchange', () => {
     if (!fullscreenCallBtn) return;
@@ -2712,7 +2838,8 @@
 
   collapseCallBtn.addEventListener('click', () => {
     callCollapsed = !callCollapsed;
-    if (callCollapsed) callStage.classList.add('hidden');
+    if (callCollapsed && liveCinemaEnabled) setLiveCinema(false);
+    syncCallStageVisibility();
   });
 
   document.addEventListener('click', (event) => {
