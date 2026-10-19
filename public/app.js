@@ -30,6 +30,8 @@
   const soundStatusText = document.querySelector('#soundStatusText');
   const cameraBtn = document.querySelector('#cameraBtn');
   const screenBtn = document.querySelector('#screenBtn');
+  const liveQualitySelect = document.querySelector('#liveQualitySelect');
+  const liveQualityBadge = document.querySelector('#liveQualityBadge');
   const noiseBtn = document.querySelector('#noiseBtn');
   const noiseStatusText = document.querySelector('#noiseStatusText');
   const callStage = document.querySelector('#callStage');
@@ -62,6 +64,11 @@
   const SAVED_NAME_KEY = 'conecta.savedName';
   const SAVED_USER_KEY = 'conecta.userKey';
   const NOISE_SUPPRESSION_KEY = 'conecta.noiseSuppression';
+  const LIVE_QUALITY_KEY = 'conecta.liveQuality.2';
+  const LIVE_QUALITY_PRESETS = Object.freeze({
+    fhd: Object.freeze({ width: 1920, height: 1080, fps: 60, bitrate: 8_000_000, label: 'Full HD · 1080p' }),
+    hd: Object.freeze({ width: 1280, height: 720, fps: 60, bitrate: 4_000_000, label: 'HD · 720p' }),
+  });
 
   let sessionId = sessionStorage.getItem('conecta.sessionId') || '';
   let profileName = sessionStorage.getItem('conecta.name') || '';
@@ -79,6 +86,28 @@
   let screenEnabled = false;
   // Redução básica do próprio navegador, ligada por padrão.
   let noiseSuppressionEnabled = localStorage.getItem(NOISE_SUPPRESSION_KEY) !== 'false';
+  // Full HD / 60 FPS e a preferencia; salva a escolha so neste navegador.
+  let liveQuality = Object.hasOwn(LIVE_QUALITY_PRESETS, localStorage.getItem(LIVE_QUALITY_KEY))
+    ? localStorage.getItem(LIVE_QUALITY_KEY) : 'fhd';
+  function selectedLivePreset() { return LIVE_QUALITY_PRESETS[liveQuality]; }
+  function syncLiveQuality() {
+    const preset = selectedLivePreset();
+    if (liveQualitySelect) {
+      liveQualitySelect.value = liveQuality;
+      liveQualitySelect.disabled = Boolean(screenEnabled);
+      liveQualitySelect.title = screenEnabled
+        ? 'Encerre a live para mudar a resolucao.' : 'Escolher a qualidade da proxima live';
+    }
+    if (liveQualityBadge) liveQualityBadge.textContent = `${liveQuality === 'fhd' ? 'FHD' : 'HD'} · ${preset.fps} FPS`;
+  }
+  liveQualitySelect?.addEventListener('change', () => {
+    if (screenEnabled) { syncLiveQuality(); return; }
+    liveQuality = liveQualitySelect.value === 'hd' ? 'hd' : 'fhd';
+    localStorage.setItem(LIVE_QUALITY_KEY, liveQuality);
+    syncLiveQuality();
+    notify(`Próxima live: ${selectedLivePreset().label} / 60 FPS (quando suportado).`);
+  });
+  syncLiveQuality();
   let callCollapsed = false;
   let cueAudioContext = null;
   const voiceTokenCache = new Map();
@@ -1411,7 +1440,7 @@
         adaptiveStream: true,
         dynacast: true,
         publishDefaults: {
-          screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+          screenShareEncoding: { maxBitrate: selectedLivePreset().bitrate, maxFramerate: selectedLivePreset().fps },
           degradationPreference: 'maintain-framerate',
         },
       });
@@ -1866,6 +1895,7 @@
   });
 
   async function createAppFocusedScreenTracks() {
+    const preset = selectedLivePreset();
     const mediaDevices = navigator.mediaDevices;
     const { LocalVideoTrack, LocalAudioTrack } = LivekitClient;
     if (!mediaDevices?.getDisplayMedia || typeof LocalVideoTrack !== 'function' || typeof LocalAudioTrack !== 'function') {
@@ -1876,9 +1906,9 @@
     // evitando oferecer o áudio completo do computador quando isso for suportado.
     const stream = await mediaDevices.getDisplayMedia({
       video: {
-        width: { max: 1920 },
-        height: { max: 1080 },
-        frameRate: { ideal: 60, max: 60 },
+        width: { max: preset.width },
+        height: { max: preset.height },
+        frameRate: { ideal: preset.fps, max: preset.fps },
       },
       audio: {
         restrictOwnAudio: true,
@@ -1906,6 +1936,7 @@
 
   async function publishScreenShareWithAudio() {
     if (!lkRoom) return { hasAudio: false, fallback: false, surface: '' };
+    const preset = selectedLivePreset();
     const participant = lkRoom.localParticipant;
     const { Track } = LivekitClient;
 
@@ -1922,19 +1953,19 @@
       tracks = await participant.createScreenTracks({
         audio: true,
         systemAudio: 'exclude',
-        resolution: { width: 1920, height: 1080, frameRate: 60 },
+        resolution: { width: preset.width, height: preset.height, frameRate: preset.fps },
         contentHint: 'motion',
       });
     } else {
       await participant.setScreenShareEnabled(
         true,
         {
-          resolution: { width: 1920, height: 1080, frameRate: 60 },
+          resolution: { width: preset.width, height: preset.height, frameRate: preset.fps },
           contentHint: 'motion',
           systemAudio: 'exclude',
         },
         {
-          videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+          videoEncoding: { maxBitrate: preset.bitrate, maxFramerate: preset.fps },
           degradationPreference: 'maintain-framerate',
         },
       );
@@ -1951,7 +1982,7 @@
     try {
       await participant.publishTrack(videoTrack, {
         source: Track.Source.ScreenShare,
-        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+        videoEncoding: { maxBitrate: preset.bitrate, maxFramerate: preset.fps },
         degradationPreference: 'maintain-framerate',
       });
     } catch (error) {
@@ -2012,9 +2043,9 @@
         updateControlButtons();
         if (result.hasAudio) {
           if (result.surface === 'browser') {
-            notify('Live iniciada com som apenas da aba compartilhada.');
+            notify(`Live ${selectedLivePreset().label} / 60 FPS: áudio apenas da aba compartilhada.`);
           } else if (result.surface === 'window') {
-            notify('Live iniciada com som da janela/aplicativo compartilhado.');
+            notify(`Live ${selectedLivePreset().label} / 60 FPS: áudio da janela compartilhada.`);
           } else {
             notify('Live iniciada com som da fonte compartilhada.');
           }
@@ -2071,6 +2102,7 @@
     micBtn.disabled = !canUseVoicePermission('speak');
     cameraBtn.disabled = !canUseVoicePermission('camera');
     screenBtn.disabled = !canUseVoicePermission('screen_share');
+    syncLiveQuality();
     cameraBtn.classList.toggle('active', cameraEnabled); cameraBtn.textContent = cameraEnabled ? '◉' : '◎';
     screenBtn.classList.toggle('active', screenEnabled);
   }
