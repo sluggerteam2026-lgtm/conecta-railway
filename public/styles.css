@@ -302,11 +302,6 @@ button{border:0}.toast{position:fixed;z-index:1000;left:50%;top:18px;transform:t
 #noiseBtn.active:hover{background:#365844}
 #noiseBtn.off{color:#949ba4;background:#2b2d31}
 
-/* Etapa 8: Krisp no microfone */
-#noiseBtn.loading{color:#f0b232;background:#443b27;cursor:wait;animation:krispPulse 1s ease-in-out infinite}
-#noiseStatusText.loading{color:#f0b232}
-@keyframes krispPulse{0%,100%{opacity:.7}50%{opacity:1}}
-
 /* Etapa 9: layout completo para celular */
 .mobile-only{display:none}
 .mobile-drawer-backdrop{display:none}
